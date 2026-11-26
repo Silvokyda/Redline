@@ -394,10 +394,10 @@
     const token = ++scanToken;
     cancelled = false;
     pageScanComplete = false;
-    progress.style.width = "0%";
     if (!listening) { addEventListener("keydown", onKey, true); listening = true; }
     targets = findTargets();
     if (!host) buildOverlay();
+    progress.style.width = "0%";
     await pause(100);
     if (cancelled || token !== scanToken) return;
     const fullPageScan = autoScrollInput.checked;
