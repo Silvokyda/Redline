@@ -11,10 +11,17 @@ const DEFAULTS = {
 
 chrome.runtime.onMessage.addListener((msg, sender, reply) => {
   if (msg?.type === "screenshot") {
-    chrome.tabs
-      .captureVisibleTab(sender.tab.windowId, { format: "jpeg", quality: 60 })
-      .then((dataUrl) => reply({ ok: true, dataUrl }))
-      .catch((err) => reply({ ok: false, error: String(err?.message || err) }));
+    (async () => {
+      try {
+        if (!sender.tab?.id) throw new Error("No active page is available for capture.");
+        const [activeTab] = await chrome.tabs.query({ active: true, windowId: sender.tab.windowId });
+        if (activeTab?.id !== sender.tab.id) throw new Error("Switch back to the page being scanned before capturing it.");
+        const dataUrl = await chrome.tabs.captureVisibleTab(sender.tab.windowId, { format: "jpeg", quality: 75 });
+        reply({ ok: true, dataUrl });
+      } catch (err) {
+        reply({ ok: false, error: String(err?.message || err) });
+      }
+    })();
     return true;
   }
   if (msg?.type === "settings") {

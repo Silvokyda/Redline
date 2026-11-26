@@ -1,5 +1,5 @@
 // Redline's independent page-rebuild experience. It snapshots the current DOM
-// into an isolated preview, then reveals it as a cursor crew scans down the page.
+// into a viewport image, then reveals it as a cursor crew scans down the page.
 (() => {
   if (window.__redlineRebuild) {
     window.__redlineRebuild.toggle();
@@ -9,6 +9,7 @@
   const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
   const startingScroll = scrollY;
   const colors = ["#f04458", "#3276f6", "#9b4dff", "#00a985", "#e99a16", "#ec6b34"];
+  const agentNames = ["Type", "Layout", "Color", "Spacing", "Flow", "Detail", "Copy", "Grid", "Contrast", "Rhythm", "Mobile", "Access", "Content", "Shape", "Navigation", "Action", "Hierarchy", "Finish"];
   let host = null;
   let frame = null;
   let reveal = null;
@@ -23,38 +24,12 @@
   let cancelled = false;
   let pageScanComplete = false;
   let scanToken = 0;
-  let resizeTimer = 0;
   let listening = false;
   let cloneScrollY = 0;
   let crew = [];
   let targets = [];
-  let renderPieces = [];
 
   const pause = (ms) => new Promise((resolve) => setTimeout(resolve, reducedMotion ? 0 : ms));
-
-  function makeSnapshot() {
-    const clone = document.documentElement.cloneNode(true);
-    clone.querySelectorAll("script, noscript, redline-overlay, redline-rebuild-overlay").forEach((node) => node.remove());
-    clone.querySelectorAll('meta[http-equiv="Content-Security-Policy" i]').forEach((node) => node.remove());
-    clone.querySelectorAll("*").forEach((node) => {
-      for (const attr of [...node.attributes]) if (/^on/i.test(attr.name)) node.removeAttribute(attr.name);
-      if (node instanceof HTMLInputElement) {
-        if (node.type === "password") node.value = "";
-        else node.setAttribute("value", node.value);
-      }
-      if (node instanceof HTMLTextAreaElement) node.textContent = node.value;
-      if (node instanceof HTMLSelectElement) {
-        [...node.options].forEach((option) => option.toggleAttribute("selected", option.selected));
-      }
-    });
-    const head = clone.querySelector("head");
-    if (head) {
-      const base = document.createElement("base");
-      base.href = location.href;
-      head.prepend(base);
-    }
-    return `<!doctype html>${clone.outerHTML}`;
-  }
 
   function findTargets() {
     const selector = "header, nav, main, section, article, h1, h2, h3, p, button, a, img, footer, [role=main]";
@@ -79,13 +54,14 @@
       * { box-sizing: border-box; }
       .scene { position: fixed; inset: 0; z-index: 2147483646; overflow: hidden; background: #f7f8fa; color: #20242b;
         font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
-      .page { position: absolute; inset: 0 0 48px; width: 100%; height: calc(100% - 48px); border: 0; background: #fff;
+      .page { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: fill; border: 0;
         clip-path: inset(0 0 100% 0); pointer-events: none; }
-      .veil { position: absolute; inset: 0 0 48px; background: #f7f8fa; pointer-events: none; }
       .agents { position: absolute; inset: 0 0 48px; pointer-events: none; overflow: hidden; }
-      .agent { position: absolute; left: 0; top: 0; width: 14px; height: 19px; border: 2px solid white; border-radius: 2px 8px 8px 8px;
-        background: var(--agent-color); box-shadow: 0 2px 7px #1115; transform: translate(-40px,-40px) rotate(-28deg);
-        transition: transform 520ms cubic-bezier(.22,.72,.2,1); }
+      .agent { position: absolute; left: 0; top: 0; width: 17px; height: 22px; background: white;
+        clip-path: polygon(0 0, 100% 76%, 60% 82%, 49% 100%); filter: drop-shadow(0 2px 3px #1118);
+        transform: translate(-40px,-40px) rotate(-28deg); transition: transform 520ms cubic-bezier(.22,.72,.2,1); }
+      .agent::before { content: ""; position: absolute; inset: 2px; background: var(--agent-color);
+        clip-path: polygon(0 0, 100% 76%, 60% 82%, 49% 100%); }
       .agent::after { content: ""; position: absolute; left: 11px; top: 14px; width: max-content; padding: 2px 6px; border-radius: 8px;
         background: var(--agent-color); color: white; font: 600 10px/1.2 system-ui,sans-serif; box-shadow: 0 1px 4px #1113; }
       .agent[data-name]::after { content: attr(data-name); }
@@ -120,20 +96,16 @@
     installStyles(root);
     const scene = document.createElement("div");
     scene.className = "scene";
-    reveal = document.createElement("iframe");
+    reveal = document.createElement("img");
     reveal.className = "page";
-    reveal.title = "Redline page rebuild preview";
-    reveal.setAttribute("sandbox", "allow-same-origin");
-    reveal.srcdoc = makeSnapshot();
-    const veil = document.createElement("div");
-    veil.className = "veil";
+    reveal.alt = "The current page being rebuilt by Redline";
     const agents = document.createElement("div");
     agents.className = "agents";
-    crew = colors.map((color, index) => {
+    crew = agentNames.map((name, index) => {
       const cursor = document.createElement("span");
       cursor.className = "agent";
-      cursor.dataset.name = ["Type", "Layout", "Color", "Spacing", "Flow", "Detail"][index];
-      cursor.style.setProperty("--agent-color", color);
+      cursor.dataset.name = name;
+      cursor.style.setProperty("--agent-color", colors[index % colors.length]);
       agents.appendChild(cursor);
       return cursor;
     });
@@ -174,61 +146,30 @@
     closeButton.textContent = "Exit";
     closeButton.addEventListener("click", () => close(false));
     toolbar.append(brand, status, track, autoLabel, soundButton, editorButton, closeButton);
-    scene.append(reveal, veil, agents, toolbar);
+    scene.append(reveal, agents, toolbar);
     root.appendChild(scene);
     document.documentElement.appendChild(host);
     frame = reveal;
-    reveal.addEventListener("load", () => {
-      try {
-        const doc = reveal.contentDocument;
-        doc.addEventListener("click", (event) => event.preventDefault(), true);
-        doc.addEventListener("submit", (event) => event.preventDefault(), true);
-      } catch {}
+    crew.forEach((cursor, index) => {
+      const x = innerWidth * (0.06 + ((index * 0.6180339) % 0.86));
+      const y = innerHeight * (0.08 + ((index * 0.381966) % 0.76));
+      setCursor(cursor, x, y);
     });
   }
 
-  function syncFrameScroll() {
-    if (!frame?.contentWindow) return;
-    frame.contentWindow.scrollTo(0, cloneScrollY);
-  }
-
-  function prepareRenderPieces() {
-    renderPieces = [];
-    const doc = frame?.contentDocument;
-    if (!doc) return;
-    const selector = "h1,h2,h3,h4,p,li,button,a,img,picture,figure,blockquote,input,textarea,select,[role=button],[role=heading]";
-    for (const element of doc.querySelectorAll(selector)) {
-      const rect = element.getBoundingClientRect();
-      if (rect.width < 2 || rect.height < 2 || getComputedStyle(element).visibility === "hidden") continue;
-      const style = getComputedStyle(element);
-      const piece = {
-        element,
-        opacity: style.opacity,
-        transform: style.transform === "none" ? "none" : style.transform,
-        revealed: false,
-      };
-      element.style.setProperty("transition", "opacity .25s ease, transform .32s cubic-bezier(.2,.75,.2,1)", "important");
-      element.style.setProperty("opacity", "0", "important");
-      element.style.setProperty("transform", "translateY(8px)", "important");
-      renderPieces.push(piece);
+  async function captureViewport() {
+    if (!host?.isConnected) throw new Error("The Redline preview was closed.");
+    const visibility = host.style.visibility;
+    host.style.visibility = "hidden";
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    try {
+      const response = await chrome.runtime.sendMessage({ type: "screenshot" });
+      if (!response?.ok || !response.dataUrl) throw new Error(response?.error || "Could not capture this page.");
+      return response.dataUrl;
+    } finally {
+      if (host?.isConnected) host.style.visibility = visibility;
     }
   }
-
-  function showPiece(piece) {
-    if (piece.revealed) return;
-    piece.revealed = true;
-    piece.element.style.setProperty("opacity", piece.opacity, "important");
-    piece.element.style.setProperty("transform", piece.transform, "important");
-  }
-
-  const onScroll = () => {
-    if (!autoScrollInput?.checked) cloneScrollY = scrollY;
-    syncFrameScroll();
-  };
-  const onResize = () => {
-    clearTimeout(resizeTimer);
-    resizeTimer = setTimeout(syncFrameScroll, 100);
-  };
 
   function setCursor(cursor, x, y) {
     const maxX = Math.max(14, innerWidth - 28);
@@ -236,38 +177,68 @@
     cursor.style.transform = `translate(${Math.max(4, Math.min(maxX, x))}px, ${Math.max(4, Math.min(maxY, y))}px) rotate(-28deg)`;
   }
 
+  function spreadTargets(targetsInView, startY) {
+    const selected = [];
+    const candidates = targetsInView
+      .filter((target) => target.w < innerWidth * 0.95 && target.h < innerHeight * 0.8)
+      .sort((a, b) => (a.w * a.h) - (b.w * b.h));
+    for (let row = 0; row < 2; row++) {
+      for (let column = 0; column < 3; column++) {
+        const point = candidates.find((target) => {
+          if (selected.includes(target)) return false;
+          const x = target.x - scrollX + target.w / 2;
+          const y = target.y - startY + target.h / 2;
+          return x >= innerWidth * column / 3 && x < innerWidth * (column + 1) / 3 &&
+            y >= innerHeight * row / 2 && y < innerHeight * (row + 1) / 2;
+        });
+        if (point) selected.push(point);
+      }
+    }
+    for (const point of candidates) {
+      if (selected.length >= crew.length) break;
+      if (!selected.includes(point)) selected.push(point);
+    }
+    const fallbackSpots = [[0.15, 0.22], [0.5, 0.22], [0.84, 0.22], [0.15, 0.72], [0.5, 0.72], [0.84, 0.72]];
+    while (selected.length < Math.min(6, crew.length)) {
+      const [x, y] = fallbackSpots[selected.length % fallbackSpots.length];
+      selected.push({ x: scrollX + innerWidth * x, y: startY + innerHeight * y, w: innerWidth * 0.12, h: 40 });
+    }
+    return selected;
+  }
+
   async function revealViewport(scrollPosition, index, count, token) {
     cloneScrollY = scrollPosition;
     playScanTone(index);
     if (autoScrollInput.checked) {
       window.scrollTo({ top: scrollPosition, behavior: reducedMotion ? "auto" : "smooth" });
-      await pause(reducedMotion ? 0 : 320);
+      await pause(reducedMotion ? 0 : 520);
+      cloneScrollY = scrollY;
     }
-    syncFrameScroll();
     const startY = cloneScrollY;
     const visible = targets.filter((target) => target.y >= startY - 40 && target.y < startY + innerHeight + 40);
-    const target = visible[Math.min(visible.length - 1, Math.floor(visible.length * 0.62))] || null;
+    const image = await captureViewport();
+    if (cancelled || token !== scanToken) return;
+    frame.style.clipPath = "inset(0 0 100% 0)";
+    frame.src = image;
+    try { await frame.decode(); } catch {}
+    const points = spreadTargets(visible, startY);
     for (let part = 1; part <= 12; part++) {
       if (cancelled || token !== scanToken) return;
       const amount = part / 12;
       frame.style.clipPath = `inset(0 0 ${100 - amount * 100}% 0)`;
       progress.style.width = `${Math.min(100, ((index + amount) / count) * 100)}%`;
-      let pieceTarget = null;
-      for (const piece of renderPieces) {
-        if (piece.revealed) continue;
-        const rect = piece.element.getBoundingClientRect();
-        if (rect.top >= 0 && rect.top <= innerHeight * amount) {
-          showPiece(piece);
-          pieceTarget ||= rect;
-        }
-      }
-      const x = pieceTarget ? pieceTarget.left + Math.min(pieceTarget.width * 0.5, 100)
-        : target ? target.x - scrollX + target.w * ((part % 5) / 6) : innerWidth * (0.2 + (part % 5) * 0.13);
-      const y = pieceTarget ? pieceTarget.top + Math.min(pieceTarget.height * 0.5, 20)
-        : target ? target.y - startY + target.h * 0.5 : innerHeight * (0.24 + (part % 4) * 0.16);
       crew.forEach((cursor, cursorIndex) => {
-        const phase = (part + cursorIndex) % 6;
-        setCursor(cursor, x + (phase - 2) * (9 + cursorIndex), y + ((cursorIndex % 3) - 1) * 17);
+        const targetIndex = points.length ? cursorIndex % points.length : -1;
+        const target = targetIndex >= 0 ? points[targetIndex] : null;
+        const lane = target ? Math.floor(cursorIndex / points.length) : cursorIndex;
+        const phase = (part + cursorIndex) % 4;
+        const x = target
+          ? target.x - scrollX + target.w * (0.2 + (lane % 3) * 0.28) + (phase - 1.5) * 5
+          : innerWidth * (0.08 + ((cursorIndex * 0.6180339 + part * 0.07) % 0.84));
+        const y = target
+          ? target.y - startY + target.h * (0.28 + (lane % 3) * 0.24) + (phase - 1.5) * 4
+          : innerHeight * (0.12 + ((cursorIndex * 0.381966 + part * 0.045) % 0.72));
+        setCursor(cursor, x, y);
       });
       await pause(58);
     }
@@ -276,22 +247,11 @@
   async function build() {
     const token = ++scanToken;
     cancelled = false;
-    if (!listening) {
-      addEventListener("scroll", onScroll, { passive: true });
-      addEventListener("resize", onResize, { passive: true });
-      addEventListener("keydown", onKey, true);
-      listening = true;
-    }
+    if (!listening) { addEventListener("keydown", onKey, true); listening = true; }
     targets = findTargets();
     if (!host) buildOverlay();
-    await new Promise((resolve) => {
-      if (frame.contentDocument?.readyState === "complete") resolve();
-      else frame.addEventListener("load", resolve, { once: true });
-      setTimeout(resolve, 1800);
-    });
-    await pause(260);
+    await pause(100);
     if (cancelled || token !== scanToken) return;
-    prepareRenderPieces();
     const fullPageScan = autoScrollInput.checked;
     const maxScroll = Math.max(0, document.documentElement.scrollHeight - innerHeight);
     const stepSize = Math.max(440, Math.round(innerHeight * 0.76));
@@ -369,12 +329,9 @@
   function close(keepPosition, removeController = true) {
     cancelled = true;
     scanToken++;
-    clearTimeout(resizeTimer);
     host?.remove();
     host = null;
     frame = null;
-    removeEventListener("scroll", onScroll);
-    removeEventListener("resize", onResize);
     removeEventListener("keydown", onKey, true);
     listening = false;
     if (removeController) delete window.__redlineRebuild;
