@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Redline options</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    --ink: #20242b; --muted: #5c6470; --paper: #f6f7f9; --card: #ffffff;
+    --line: #d5d9e0; --red: #e5254b; --ok: #0e8a6a; color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --ink: #e8eaee; --muted: #9aa3ae; --paper: #16181c; --card: #1f2227;
+      --line: #343840; --red: #ff5a76; --ok: #3ccf9f; color-scheme: dark; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--paper); color: var(--ink);
+    font: 15px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 34rem; margin: 3rem auto; padding: 0 1.25rem; }
+  h1 { font-size: 1.75rem; margin: 0 0 .25rem; letter-spacing: -.01em; }
+  h1 span { text-decoration: underline wavy var(--red); text-underline-offset: 6px; text-decoration-thickness: 2px; }
+  .lede { color: var(--muted); margin: 0 0 2rem; }
+  fieldset { border: 1px solid var(--line); border-radius: 10px; background: var(--card); padding: 1.25rem; margin: 0 0 1.25rem; }
+  legend { font-weight: 600; padding: 0 .4rem; }
+  .providers { display: grid; grid-template-columns: 1fr 1fr; gap: .6rem; }
+  .providers label { border: 1.5px solid var(--line); border-radius: 8px; padding: .7rem .8rem; cursor: pointer; display: flex; gap: .5rem; align-items: center; }
+  .providers label:has(input:checked) { border-color: var(--red); }
+  .field { margin-top: 1rem; }
+  .field[hidden] { display: none; }
+  .field label { display: block; font-weight: 600; font-size: .9rem; margin-bottom: .3rem; }
+  input[type=password], input[type=text] { width: 100%; padding: .6rem .7rem; border: 1px solid var(--line); border-radius: 7px;
+    background: var(--paper); color: var(--ink); font: inherit; }
+  input:focus-visible, button:focus-visible { outline: 2px solid var(--red); outline-offset: 2px; }
+  .hint { color: var(--muted); font-size: .85rem; margin: .3rem 0 0; }
+  .hint a { color: inherit; }
+  .row { display: flex; gap: .6rem; align-items: center; flex-wrap: wrap; }
+  button { font: inherit; font-weight: 600; border-radius: 7px; padding: .6rem 1rem; cursor: pointer; border: 1px solid var(--line); background: var(--card); color: var(--ink); }
+  button.primary { background: var(--red); border-color: var(--red); color: #fff; }
+  #status { font-size: .9rem; }
+  #status.ok { color: var(--ok); } #status.err { color: var(--red); }
+  .privacy { color: var(--muted); font-size: .85rem; }
+  .skill-list { display: grid; gap: .65rem; }
+  .skill-row { display: flex; align-items: start; justify-content: space-between; gap: .75rem; padding: .75rem; border: 1px solid var(--line); border-radius: 8px; }
+  .skill-row strong { display: block; font-size: .95rem; }
+  .skill-row p { color: var(--muted); font-size: .82rem; margin: .2rem 0 0; }
+  .skill-row button { padding: .35rem .6rem; font-size: .82rem; flex: none; }
+  #skillFile { display: block; margin-top: .75rem; max-width: 100%; font: inherit; }
+  pre { max-width: 100%; overflow: auto; padding: .7rem; border-radius: 7px; background: var(--paper); font-size: .8rem; }
+  #skillStatus { min-height: 1.4em; font-size: .9rem; }
+  #skillStatus.err { color: var(--red); } #skillStatus.ok { color: var(--ok); }
+</style>
+</head>
+<body>
+<main>
+  <h1><span>Redline</span> options</h1>
+  <p class="lede">Quick fixes work without any key. Connect an AI provider to get full redesigns.</p>
+
+  <form id="form">
+    <fieldset>
+      <legend>AI provider</legend>
+      <div class="providers">
+        <label><input type="radio" name="provider" value="anthropic" checked> Anthropic (Claude)</label>
+        <label><input type="radio" name="provider" value="openai"> OpenAI</label>
+      </div>
+
+      <div class="field" data-for="anthropic">
+        <label for="anthropicKey">Anthropic API key</label>
+        <input id="anthropicKey" type="password" autocomplete="off" spellcheck="false" placeholder="sk-ant-…">
+        <p class="hint">Create one at <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">console.anthropic.com</a>.</p>
+      </div>
+      <div class="field" data-for="anthropic">
+        <label for="anthropicModel">Model</label>
+        <input id="anthropicModel" type="text" spellcheck="false" placeholder="claude-sonnet-5-5">
+      </div>
+
+      <div class="field" data-for="openai" hidden>
+        <label for="openaiKey">OpenAI API key</label>
+        <input id="openaiKey" type="password" autocomplete="off" spellcheck="false" placeholder="sk-…">
+        <p class="hint">Create one at <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener">platform.openai.com</a>. Pick a model that accepts images.</p>
+      </div>
+      <div class="field" data-for="openai" hidden>
+        <label for="openaiModel">Model</label>
+        <input id="openaiModel" type="text" spellcheck="false" placeholder="gpt-4.1">
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Design skills</legend>
+      <p class="hint">Built-in styles are ready to use. Choose one in Redline before an AI redesign, or install your own prompt profile below.</p>
+      <div id="skillList" class="skill-list" aria-live="polite"></div>
+      <label class="field" for="skillFile">Install custom design skill (JSON or Claude SKILL.md)</label>
+      <input id="skillFile" type="file" accept="application/json,.json,text/markdown,.md,.markdown,.txt">
+      <p id="skillStatus" role="status"></p>
+      <details>
+        <summary>Custom skill file formats</summary>
+        <p class="hint">Import a JSON profile or a self-contained Markdown skill file (including Claude <code>SKILL.md</code>). For Markdown, Redline uses the main file text; linked reference files aren’t imported.</p>
+        <pre>{
+  "name": "Quiet luxury",
+  "description": "Refined, understated styling",
+  "instructions": "Use a restrained palette, clear typography, and..."
+}</pre>
+        <p class="hint">Skill files contain text instructions only. They are stored locally and sent to your selected AI provider when used.</p>
+      </details>
+    </fieldset>
+
+    <div class="row">
+      <button class="primary" type="submit">Save</button>
+      <button type="button" id="test">Test connection</button>
+      <button type="button" id="clear">Remove keys</button>
+      <span id="status" role="status"></span>
+    </div>
+  </form>
+
+<p class="privacy">Your key and installed skills are stored only in this browser (chrome.storage.local). When you request an AI redesign, your selected provider receives the screenshot, page summary, and chosen skill instructions. Quick fixes never leave your browser.</p>
+</main>
+<script src="design-skills.js"></script>
+<script src="redline-options.js"></script>
+</body>
+</html>
