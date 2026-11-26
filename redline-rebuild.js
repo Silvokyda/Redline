@@ -57,7 +57,7 @@
       .page { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: fill; border: 0;
         clip-path: inset(0 0 100% 0); pointer-events: none; }
       .agents { position: absolute; inset: 0 0 48px; pointer-events: none; overflow: hidden; }
-      .agent { position: absolute; left: 0; top: 0; width: 17px; height: 22px; background: white;
+      .agent { position: absolute; z-index: 1; left: 0; top: 0; width: 17px; height: 22px; background: white;
         clip-path: polygon(0 0, 100% 76%, 60% 82%, 49% 100%); filter: drop-shadow(0 2px 3px #1118);
         transform: translate(-40px,-40px) rotate(-28deg); transition: transform 520ms cubic-bezier(.22,.72,.2,1); }
       .agent::before { content: ""; position: absolute; inset: 2px; background: var(--agent-color);
@@ -65,6 +65,14 @@
       .agent::after { content: ""; position: absolute; left: 11px; top: 14px; width: max-content; padding: 2px 6px; border-radius: 8px;
         background: var(--agent-color); color: white; font: 600 10px/1.2 system-ui,sans-serif; box-shadow: 0 1px 4px #1113; }
       .agent[data-name]::after { content: attr(data-name); }
+      .focus { position: absolute; display: none; border: 1px solid var(--agent-color); border-radius: 4px;
+        background: color-mix(in srgb, var(--agent-color) 8%, transparent); box-shadow: 0 0 0 1px #fff9, 0 2px 9px #1113;
+        transition: left 420ms cubic-bezier(.22,.72,.2,1), top 420ms cubic-bezier(.22,.72,.2,1),
+          width 300ms ease, height 300ms ease, opacity 180ms ease; opacity: 0; }
+      .focus[data-active="true"] { display:block; opacity:1; }
+      .focus::after { content: attr(data-label); position:absolute; left:-1px; top:-19px; max-width:150px;
+        overflow:hidden; text-overflow:ellipsis; white-space:nowrap; padding:2px 5px; border-radius:4px 4px 0 0;
+        background:var(--agent-color); color:white; font:600 9px/1.3 system-ui,sans-serif; }
       .toolbar { position: absolute; z-index: 2; left: 50%; bottom: 10px; transform: translateX(-50%); display: flex; align-items: center;
         gap: 8px; max-width: calc(100vw - 20px); padding: 7px 9px; border: 1px solid #30343a; border-radius: 13px;
         background: #202328; color: #f4f5f7; box-shadow: 0 5px 20px #0003; white-space: nowrap; }
@@ -107,6 +115,12 @@
       cursor.dataset.name = name;
       cursor.style.setProperty("--agent-color", colors[index % colors.length]);
       agents.appendChild(cursor);
+        const focus = document.createElement("span");
+        focus.className = "focus";
+        focus.style.setProperty("--agent-color", colors[index % colors.length]);
+        focus.dataset.label = name;
+        agents.appendChild(focus);
+        cursor.focusBox = focus;
       return cursor;
     });
     const toolbar = document.createElement("div");
@@ -163,7 +177,15 @@
     host.style.visibility = "hidden";
     await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     try {
-      const response = await chrome.runtime.sendMessage({ type: "screenshot" });
+      let response;
+      try {
+        response = await chrome.runtime.sendMessage({ type: "screenshot" });
+      } catch (error) {
+        if (/extension context invalidated/i.test(String(error?.message || error))) {
+          throw new Error("Redline was reloaded. Refresh this page before starting another scan.");
+        }
+        throw error;
+      }
       if (!response?.ok || !response.dataUrl) throw new Error(response?.error || "Could not capture this page.");
       return response.dataUrl;
     } finally {
@@ -178,32 +200,95 @@
   }
 
   function spreadTargets(targetsInView, startY) {
-    const selected = [];
     const candidates = targetsInView
-      .filter((target) => target.w < innerWidth * 0.95 && target.h < innerHeight * 0.8)
+      .filter((target) => target.w < innerWidth * 0.96 && target.h < innerHeight * 0.82)
+      .map((target) => ({ ...target, cx: target.x - scrollX + target.w / 2, cy: target.y - startY + target.h / 2 }))
+      .filter((target) => target.cx >= 0 && target.cx <= innerWidth && target.cy >= 0 && target.cy <= innerHeight)
       .sort((a, b) => (a.w * a.h) - (b.w * b.h));
-    for (let row = 0; row < 2; row++) {
-      for (let column = 0; column < 3; column++) {
-        const point = candidates.find((target) => {
-          if (selected.includes(target)) return false;
-          const x = target.x - scrollX + target.w / 2;
-          const y = target.y - startY + target.h / 2;
-          return x >= innerWidth * column / 3 && x < innerWidth * (column + 1) / 3 &&
-            y >= innerHeight * row / 2 && y < innerHeight * (row + 1) / 2;
-        });
-        if (point) selected.push(point);
+    const selected = [];
+    const occupied = new Set();
+    const occupiedCells = new Set();
+    // Seed a 6-by-3 grid first so the agents fan out across the viewport.
+    for (let row = 0; row < 3; row++) {
+      for (let column = 0; column < 6; column++) {
+        const x = innerWidth * (column + 0.5) / 6;
+        const y = innerHeight * (row + 0.5) / 3;
+        const target = candidates.find((item) => !occupied.has(item) &&
+          Math.floor(item.cx / innerWidth * 6) === column && Math.floor(item.cy / innerHeight * 3) === row);
+        if (target) {
+          selected.push(target);
+          occupied.add(target);
+          occupiedCells.add(`${column}:${row}`);
+        }
       }
     }
-    for (const point of candidates) {
-      if (selected.length >= crew.length) break;
-      if (!selected.includes(point)) selected.push(point);
+    while (selected.length < crew.length) {
+      let best = null;
+      let bestDistance = -1;
+      for (const target of candidates) {
+        if (occupied.has(target)) continue;
+        const distance = selected.length
+          ? Math.min(...selected.map((point) => Math.hypot((target.cx - point.cx) / innerWidth, (target.cy - point.cy) / innerHeight)))
+          : 0;
+        if (distance > bestDistance) { best = target; bestDistance = distance; }
+      }
+      if (!best) break;
+      selected.push(best);
+      occupied.add(best);
     }
-    const fallbackSpots = [[0.15, 0.22], [0.5, 0.22], [0.84, 0.22], [0.15, 0.72], [0.5, 0.72], [0.84, 0.72]];
-    while (selected.length < Math.min(6, crew.length)) {
-      const [x, y] = fallbackSpots[selected.length % fallbackSpots.length];
-      selected.push({ x: scrollX + innerWidth * x, y: startY + innerHeight * y, w: innerWidth * 0.12, h: 40 });
+    for (let row = 0; row < 3 && selected.length < crew.length; row++) {
+      for (let column = 0; column < 6 && selected.length < crew.length; column++) {
+        const x = innerWidth * (column + 0.5) / 6;
+        const y = innerHeight * (row + 0.5) / 3;
+        if (occupiedCells.has(`${column}:${row}`)) continue;
+        selected.push({ x: scrollX + x - 38, y: startY + y - 18, w: 76, h: 36, cx: x, cy: y, synthetic: true });
+      }
     }
-    return selected;
+    return selected.slice(0, crew.length);
+  }
+
+  function focusTarget(cursor, target, startY) {
+    const box = cursor.focusBox;
+    const x = target.x - scrollX;
+    const y = target.y - startY;
+    const w = Math.max(24, Math.min(target.w, innerWidth - Math.max(0, x)));
+    const h = Math.max(18, Math.min(target.h, innerHeight - Math.max(0, y)));
+    box.style.left = `${Math.max(0, x)}px`;
+    box.style.top = `${Math.max(0, y)}px`;
+    box.style.width = `${w}px`;
+    box.style.height = `${h}px`;
+    box.dataset.label = target.synthetic ? cursor.dataset.name : `${cursor.dataset.name} · ${target.el?.tagName?.toLowerCase() || "area"}`;
+    box.dataset.active = "true";
+  }
+
+  async function scanAgent(cursor, target, index, startY, token) {
+    await pause((index % 6) * 55);
+    if (cancelled || token !== scanToken) return;
+    const x = target.cx ?? (target.x - scrollX + target.w / 2);
+    const y = target.cy ?? (target.y - startY + target.h / 2);
+    const approachX = Math.max(12, Math.min(innerWidth - 18, x + (index % 2 ? -Math.min(26, target.w * 0.2) : Math.min(26, target.w * 0.2))));
+    const approachY = Math.max(12, Math.min(innerHeight - 74, y + (index % 3 - 1) * Math.min(18, target.h * 0.16)));
+    setCursor(cursor, approachX, approachY);
+    focusTarget(cursor, target, startY);
+    await pause(300 + (index % 4) * 55);
+    if (cancelled || token !== scanToken) return;
+    setCursor(cursor, x, y);
+    await pause(280);
+    cursor.focusBox.dataset.active = "false";
+  }
+
+  async function animateViewport(points, startY, index, count, token) {
+    const work = crew.map((cursor, cursorIndex) => scanAgent(cursor, points[cursorIndex], cursorIndex, startY, token));
+    const parts = reducedMotion ? 1 : 28;
+    for (let part = 1; part <= parts; part++) {
+      if (cancelled || token !== scanToken) return;
+      const amount = part / parts;
+      frame.style.clipPath = `inset(0 0 ${100 - amount * 100}% 0)`;
+      progress.style.width = `${Math.min(100, ((index + amount) / count) * 100)}%`;
+      await pause(reducedMotion ? 0 : 58);
+    }
+    await Promise.all(work);
+    crew.forEach((cursor) => { cursor.focusBox.dataset.active = "false"; });
   }
 
   async function revealViewport(scrollPosition, index, count, token) {
@@ -214,6 +299,8 @@
       await pause(reducedMotion ? 0 : 520);
       cloneScrollY = scrollY;
     }
+    // Re-read after scrolling so reveal-on-scroll and lazy-loaded areas get targets.
+    targets = findTargets();
     const startY = cloneScrollY;
     const visible = targets.filter((target) => target.y >= startY - 40 && target.y < startY + innerHeight + 40);
     const image = await captureViewport();
@@ -222,26 +309,7 @@
     frame.src = image;
     try { await frame.decode(); } catch {}
     const points = spreadTargets(visible, startY);
-    for (let part = 1; part <= 12; part++) {
-      if (cancelled || token !== scanToken) return;
-      const amount = part / 12;
-      frame.style.clipPath = `inset(0 0 ${100 - amount * 100}% 0)`;
-      progress.style.width = `${Math.min(100, ((index + amount) / count) * 100)}%`;
-      crew.forEach((cursor, cursorIndex) => {
-        const targetIndex = points.length ? cursorIndex % points.length : -1;
-        const target = targetIndex >= 0 ? points[targetIndex] : null;
-        const lane = target ? Math.floor(cursorIndex / points.length) : cursorIndex;
-        const phase = (part + cursorIndex) % 4;
-        const x = target
-          ? target.x - scrollX + target.w * (0.2 + (lane % 3) * 0.28) + (phase - 1.5) * 5
-          : innerWidth * (0.08 + ((cursorIndex * 0.6180339 + part * 0.07) % 0.84));
-        const y = target
-          ? target.y - startY + target.h * (0.28 + (lane % 3) * 0.24) + (phase - 1.5) * 4
-          : innerHeight * (0.12 + ((cursorIndex * 0.381966 + part * 0.045) % 0.72));
-        setCursor(cursor, x, y);
-      });
-      await pause(58);
-    }
+    await animateViewport(points, startY, index, count, token);
   }
 
   async function build() {
@@ -347,15 +415,19 @@
     toggle: () => close(false),
     restart: () => {
       close(false, false);
-      setTimeout(() => build().catch((error) => {
-        console.warn("Redline page scan failed:", error);
-        close(false);
-      }), 50);
+      setTimeout(() => build().catch(handleScanFailure), 50);
     },
   };
 
-  build().catch((error) => {
-    console.warn("Redline page scan failed:", error);
+  function handleScanFailure(error) {
+    const message = String(error?.message || error || "Unknown scan error");
     close(false);
-  });
+    if (/extension context invalidated|Redline was reloaded/i.test(message)) {
+      console.info("Redline stopped because the extension was reloaded. Refresh this page to scan again.");
+      return;
+    }
+    console.warn("Redline page scan failed:", error);
+  }
+
+  build().catch(handleScanFailure);
 })();
