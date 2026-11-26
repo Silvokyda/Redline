@@ -12,6 +12,7 @@
   const agentNames = ["Type", "Layout", "Color", "Spacing", "Flow", "Detail", "Copy", "Grid", "Contrast", "Rhythm", "Mobile", "Access", "Content", "Shape", "Navigation", "Action", "Hierarchy", "Finish"];
   let host = null;
   let frame = null;
+  let tilesLayer = null;
   let reveal = null;
   let status = null;
   let progress = null;
@@ -55,7 +56,14 @@
       .scene { position: fixed; inset: 0; z-index: 2147483646; overflow: hidden; background: #f7f8fa; color: #20242b;
         font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
       .page { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: fill; border: 0;
-        clip-path: inset(0 0 100% 0); pointer-events: none; }
+        opacity: 0; transition: opacity 420ms ease; pointer-events: none; }
+      .page.complete { opacity: 1; }
+      .scan-tiles { position: absolute; inset: 0 0 48px; pointer-events: none; transition: opacity 360ms ease; }
+      .scan-tiles.finished { opacity: 0; }
+      .scan-piece { position: absolute; overflow: hidden; opacity: 0; clip-path: inset(0 100% 0 0);
+        transform: scale(.985); transform-origin: left center;
+        transition: opacity 120ms ease, clip-path 360ms cubic-bezier(.2,.7,.2,1), transform 360ms ease; }
+      .scan-piece.built { opacity: 1; clip-path: inset(0); transform: none; }
       .agents { position: absolute; inset: 0 0 48px; pointer-events: none; overflow: hidden; }
       .agent { position: absolute; z-index: 1; left: 0; top: 0; width: 17px; height: 22px; background: white;
         clip-path: polygon(0 0, 100% 76%, 60% 82%, 49% 100%); filter: drop-shadow(0 2px 3px #1118);
@@ -73,6 +81,8 @@
       .focus::after { content: attr(data-label); position:absolute; left:-1px; top:-19px; max-width:150px;
         overflow:hidden; text-overflow:ellipsis; white-space:nowrap; padding:2px 5px; border-radius:4px 4px 0 0;
         background:var(--agent-color); color:white; font:600 9px/1.3 system-ui,sans-serif; }
+      .focus::before { content: attr(data-size); position:absolute; right:-1px; bottom:-17px; padding:1px 4px; border-radius:0 0 4px 4px;
+        background:var(--agent-color); color:white; font:600 8px/1.3 system-ui,sans-serif; }
       .toolbar { position: absolute; z-index: 2; left: 50%; bottom: 10px; transform: translateX(-50%); display: flex; align-items: center;
         gap: 8px; max-width: calc(100vw - 20px); padding: 7px 9px; border: 1px solid #30343a; border-radius: 13px;
         background: #202328; color: #f4f5f7; box-shadow: 0 5px 20px #0003; white-space: nowrap; }
@@ -107,6 +117,9 @@
     reveal = document.createElement("img");
     reveal.className = "page";
     reveal.alt = "The current page being rebuilt by Redline";
+    reveal.setAttribute("aria-hidden", "true");
+    tilesLayer = document.createElement("div");
+    tilesLayer.className = "scan-tiles";
     const agents = document.createElement("div");
     agents.className = "agents";
     crew = agentNames.map((name, index) => {
@@ -160,7 +173,7 @@
     closeButton.textContent = "Exit";
     closeButton.addEventListener("click", () => close(false));
     toolbar.append(brand, status, track, autoLabel, soundButton, editorButton, closeButton);
-    scene.append(reveal, agents, toolbar);
+    scene.append(reveal, tilesLayer, agents, toolbar);
     root.appendChild(scene);
     document.documentElement.appendChild(host);
     frame = reveal;
@@ -244,24 +257,53 @@
   }
 
   function spreadTargets(targetsInView, startY) {
+    const scanHeight = Math.max(80, innerHeight - 48);
     const candidates = targetsInView
       .filter((target) => target.w < innerWidth * 0.96 && target.h < innerHeight * 0.82)
       .map((target) => ({ ...target, cx: target.x - scrollX + target.w / 2, cy: target.y - startY + target.h / 2 }))
-      .filter((target) => target.cx >= 0 && target.cx <= innerWidth && target.cy >= 0 && target.cy <= innerHeight)
+      .filter((target) => target.cx >= 0 && target.cx <= innerWidth && target.cy >= 0 && target.cy <= scanHeight)
       .sort((a, b) => (a.w * a.h) - (b.w * b.h));
     const selected = [];
     // Seed a 6-by-3 grid first so the agents fan out across the viewport.
     for (let row = 0; row < 3; row++) {
       for (let column = 0; column < 6; column++) {
         const x = innerWidth * (column + 0.5) / 6;
-        const y = innerHeight * (row + 0.5) / 3;
+        const y = scanHeight * (row + 0.5) / 3;
+        const cell = { x: innerWidth * column / 6, y: scanHeight * row / 3,
+          w: innerWidth / 6, h: scanHeight / 3 };
         const target = candidates.find((item) =>
-          Math.floor(item.cx / innerWidth * 6) === column && Math.floor(item.cy / innerHeight * 3) === row);
-        if (target) selected.push(target);
-        else selected.push({ x: scrollX + x - 38, y: startY + y - 18, w: 76, h: 36, cx: x, cy: y, synthetic: true });
+          Math.floor(item.cx / innerWidth * 6) === column && Math.floor(item.cy / scanHeight * 3) === row);
+        if (target) selected.push({ ...target, cell });
+        else selected.push({ x: scrollX + x - 38, y: startY + y - 18, w: 76, h: 36, cx: x, cy: y, cell, synthetic: true });
       }
     }
     return selected.slice(0, crew.length);
+  }
+
+  function createScanPieces(points, image, startY) {
+    tilesLayer.replaceChildren();
+    return points.map((target) => {
+      const rawLeft = target.synthetic ? target.cell.x : target.x - scrollX;
+      const rawTop = target.synthetic ? target.cell.y : target.y - startY;
+      const rawRight = target.synthetic ? target.cell.x + target.cell.w : rawLeft + target.w;
+      const rawBottom = target.synthetic ? target.cell.y + target.cell.h : rawTop + target.h;
+      const left = Math.max(0, rawLeft);
+      const top = Math.max(0, rawTop);
+      const right = Math.min(innerWidth, rawRight);
+      const bottom = Math.min(innerHeight - 48, rawBottom);
+      const piece = document.createElement("div");
+      piece.className = "scan-piece";
+      piece.style.left = `${left}px`;
+      piece.style.top = `${top}px`;
+      piece.style.width = `${Math.max(0, right - left)}px`;
+      piece.style.height = `${Math.max(0, bottom - top)}px`;
+      piece.style.backgroundImage = `url("${image}")`;
+      piece.style.backgroundSize = `${innerWidth}px ${innerHeight}px`;
+      piece.style.backgroundPosition = `-${left}px -${top}px`;
+      piece.bounds = { left, top, width: Math.max(0, right - left), height: Math.max(0, bottom - top) };
+      tilesLayer.appendChild(piece);
+      return piece;
+    });
   }
 
   function focusTarget(cursor, target, startY) {
@@ -269,16 +311,23 @@
     const x = target.x - scrollX;
     const y = target.y - startY;
     const w = Math.max(24, Math.min(target.w, innerWidth - Math.max(0, x)));
-    const h = Math.max(18, Math.min(target.h, innerHeight - Math.max(0, y)));
+    const h = Math.max(18, Math.min(target.h, innerHeight - 48 - Math.max(0, y)));
     box.style.left = `${Math.max(0, x)}px`;
     box.style.top = `${Math.max(0, y)}px`;
-    box.style.width = `${w}px`;
-    box.style.height = `${h}px`;
+    box.style.width = "0px";
+    box.style.height = "1px";
     box.dataset.label = target.synthetic ? cursor.dataset.name : `${cursor.dataset.name} · ${target.el?.tagName?.toLowerCase() || "area"}`;
+    box.dataset.size = `${Math.round(w)} × ${Math.round(h)}`;
     box.dataset.active = "true";
+    requestAnimationFrame(() => {
+      if (box.dataset.active === "true") {
+        box.style.width = `${w}px`;
+        box.style.height = `${h}px`;
+      }
+    });
   }
 
-  async function scanAgent(cursor, target, index, startY, token) {
+  async function scanAgent(cursor, target, piece, index, startY, token, onBuilt) {
     await pause(index * 38);
     if (cancelled || token !== scanToken) return;
     const x = target.cx ?? (target.x - scrollX + target.w / 2);
@@ -290,28 +339,35 @@
     const arrived = await travelCursor(cursor, approachX, approachY, index, token, Math.min(1050, Math.max(420, distance * 0.58)));
     if (!arrived || cancelled || token !== scanToken) return;
     focusTarget(cursor, target, startY);
-    await pause(130);
+    const bounds = piece.bounds;
+    const sweepY = bounds.top + bounds.height / 2;
+    const sweepStart = bounds.left + Math.min(8, bounds.width / 3);
+    const sweepEnd = Math.max(sweepStart, bounds.left + bounds.width - Math.min(14, bounds.width / 3));
+    await travelCursor(cursor, sweepStart, sweepY, index + 1, token, 180);
     if (cancelled || token !== scanToken) return;
-    await travelCursor(cursor, x, y, index + 1, token, 180);
-    await pause(210);
+    piece.classList.add("built");
+    await travelCursor(cursor, sweepEnd, sweepY, index + 2, token, Math.min(720, Math.max(240, bounds.width * 1.1)));
+    await pause(160);
     cursor.focusBox.dataset.active = "false";
+    onBuilt();
   }
 
-  async function animateViewport(points, startY, index, count, token) {
-    const work = crew.map((cursor, cursorIndex) => scanAgent(cursor, points[cursorIndex], cursorIndex, startY, token));
-    const parts = reducedMotion ? 1 : 38;
-    for (let part = 1; part <= parts; part++) {
-      if (cancelled || token !== scanToken) return;
-      const amount = part / parts;
-      frame.style.clipPath = `inset(0 0 ${100 - amount * 100}% 0)`;
-      progress.style.width = `${Math.min(100, ((index + amount) / count) * 100)}%`;
-      await pause(reducedMotion ? 0 : 58);
-    }
+  async function animateViewport(points, pieces, startY, index, count, token) {
+    let built = 0;
+    status.textContent = `Rebuilding page ${index + 1} of ${count} · 0/${points.length} areas`;
+    const work = crew.map((cursor, cursorIndex) => scanAgent(cursor, points[cursorIndex], pieces[cursorIndex], cursorIndex, startY, token, () => {
+      built++;
+      progress.style.width = `${Math.min(100, ((index + built / points.length) / count) * 100)}%`;
+      status.textContent = `Rebuilding page ${index + 1} of ${count} · ${built}/${points.length} areas`;
+    }));
     await Promise.all(work);
     crew.forEach((cursor) => { cursor.focusBox.dataset.active = "false"; });
   }
 
   async function revealViewport(scrollPosition, index, count, token) {
+    frame.classList.remove("complete");
+    tilesLayer.classList.remove("finished");
+    tilesLayer.replaceChildren();
     cloneScrollY = scrollPosition;
     playScanTone(index);
     if (autoScrollInput.checked) {
@@ -322,19 +378,23 @@
     // Re-read after scrolling so reveal-on-scroll and lazy-loaded areas get targets.
     targets = findTargets();
     const startY = cloneScrollY;
-    const visible = targets.filter((target) => target.y >= startY - 40 && target.y < startY + innerHeight + 40);
     const image = await captureViewport();
     if (cancelled || token !== scanToken) return;
-    frame.style.clipPath = "inset(0 0 100% 0)";
+    // Capture can take a couple of frames; refresh rects afterward so task marks align with the image.
+    targets = findTargets();
+    const visible = targets.filter((target) => target.y >= startY - 40 && target.y < startY + innerHeight + 40);
     frame.src = image;
     try { await frame.decode(); } catch {}
     const points = spreadTargets(visible, startY);
-    await animateViewport(points, startY, index, count, token);
+    const pieces = createScanPieces(points, image, startY);
+    await animateViewport(points, pieces, startY, index, count, token);
   }
 
   async function build() {
     const token = ++scanToken;
     cancelled = false;
+    pageScanComplete = false;
+    progress.style.width = "0%";
     if (!listening) { addEventListener("keydown", onKey, true); listening = true; }
     targets = findTargets();
     if (!host) buildOverlay();
@@ -350,21 +410,24 @@
     status.textContent = `${targets.length} page areas found`;
     for (let i = 0; i < stops.length; i++) {
       if (cancelled || token !== scanToken) return;
-      status.textContent = fullPageScan ? `Scanning page ${i + 1} of ${stops.length}` : "Scanning the visible screen";
+      status.textContent = fullPageScan ? `Preparing page ${i + 1} of ${stops.length}` : "Preparing the visible page";
       await revealViewport(stops[i], i, stops.length, token);
       if (fullPageScan && !autoScrollInput.checked && i < stops.length - 1) {
-        status.textContent = `Auto-scroll off · paused at screen ${i + 1} of ${stops.length}`;
+        frame.classList.add("complete");
+        tilesLayer.classList.add("finished");
+        status.textContent = `Auto-scroll off · page ${i + 1} ready`;
         editorButton.hidden = false;
         return;
       }
     }
     if (cancelled || token !== scanToken) return;
-    frame.style.clipPath = "inset(0 0 0 0)";
+    frame.classList.add("complete");
+    tilesLayer.classList.add("finished");
     progress.style.width = "100%";
     pageScanComplete = fullPageScan && autoScrollInput.checked;
     status.textContent = pageScanComplete
-      ? `Full page scan complete · ${targets.length} areas`
-      : `Visible screen ready · ${targets.length} areas`;
+      ? `Page rebuild complete · ${targets.length} areas`
+      : `Visible page rebuilt · ${targets.length} areas`;
     editorButton.hidden = false;
   }
 
