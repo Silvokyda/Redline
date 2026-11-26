@@ -1,6 +1,6 @@
 # Redline
 
-Redline is a Chrome extension for reviewing and improving live web pages. A crew of animated cursors scans a page, then you can run a local design audit or request a product redesign from Claude or OpenAI.
+Redline is a Chrome extension for reviewing and improving live web pages. Swarm Rebuild's animated cursor engine recreates the page on a canvas, then Redline can audit and redesign the live page with Claude or OpenAI.
 
 ## Install locally
 
@@ -26,6 +26,9 @@ Quick fixes and page scanning stay in the browser. For an AI redesign, Redline s
 
 ## Source layout
 
-- `redline-rebuild.js` creates the page snapshot and animates Redline's independent cursor-led scan.
+- `swarm-engine.js` is the locally integrated Swarm Rebuild visual engine. It is based on Dhvanil Patel's Swarm Rebuild and uses cursor motion design by Joel Califa, with Joel's permission. The HUD credits both contributors.
+- The toolbar action starts the Swarm animation; **Redesign with AI** closes the canvas and opens Redline's live-page editor.
 - `content.js` provides the live design audit, editor, mobile preview, and CSS export.
 - `redline-background.js` connects the selected AI provider and manages local settings.
+
+This working copy is for local use. Keep the Swarm attribution visible in the extension UI.
