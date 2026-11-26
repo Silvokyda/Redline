@@ -1,6 +1,13 @@
 // Built-in design profiles. These are concise prompt guides, not copied design-system text.
 globalThis.REDLINE_DESIGN_SKILLS = [
   {
+    id: "anti-slop",
+    name: "Distinctive frontend design",
+    description: "Grounded visual choices that avoid generic AI styling.",
+    sourceUrl: "https://github.com/anthropics/skills/blob/main/skills/frontend-design/SKILL.md",
+    instructions: "Start from the site's actual audience, product, and brand. Treat each color, type choice, layout, and icon as a deliberate decision. Avoid default AI patterns such as decorative gradient washes, identical rounded cards everywhere, gratuitous emoji icons, filler labels, and generic copy. Keep useful existing structure. Spend visual emphasis on one meaningful element and keep the rest disciplined. Respect accessibility, responsive behavior, reduced motion, and working controls.",
+  },
+  {
     id: "balanced",
     name: "Balanced product design",
     description: "Clear hierarchy, accessible contrast, and a consistent visual system.",

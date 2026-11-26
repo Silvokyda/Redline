@@ -17,7 +17,7 @@
   };
   const ALLOWED = new Set([
     "color", "background-color", "font-family", "font-size", "font-weight", "line-height",
-    "letter-spacing", "text-align", "text-transform", "display", "width", "min-width", "max-width",
+    "letter-spacing", "text-align", "text-transform", "width", "min-width", "max-width",
     "height", "min-height", "max-height", "flex-direction", "flex-wrap", "flex-grow", "flex-shrink",
     "flex-basis", "align-items", "align-self", "justify-content", "justify-self", "grid-template-columns",
     "grid-template-rows", "grid-auto-flow", "padding", "padding-top", "padding-right", "padding-bottom",
@@ -26,7 +26,7 @@
   ]);
   const MOBILE_ALLOWED = new Set([
     "font-size", "line-height", "text-align", "width", "min-width", "max-width", "height", "min-height",
-    "max-height", "display", "flex-direction", "flex-wrap", "flex-basis", "align-items", "align-self",
+    "max-height", "flex-direction", "flex-wrap", "flex-basis", "align-items", "align-self",
     "justify-content", "justify-self", "grid-template-columns", "grid-template-rows", "grid-auto-flow",
     "padding", "padding-top", "padding-right", "padding-bottom", "padding-left", "margin", "margin-top",
     "margin-right", "margin-bottom", "margin-left", "gap", "row-gap", "column-gap",
@@ -42,6 +42,7 @@
     skip: false,
     runToken: 0,
     phase: "ready", // ready | thinking | working | done
+    progress: { total: 0, done: 0 },
     entries: [],     // scanned elements
     byId: new Map(), // id -> entry
     byElement: new Map(), // element -> entry
@@ -53,6 +54,9 @@
     showingAfter: true,
     aiSummary: "",
     postScan: null,
+    reviewSummary: "",
+    reviewNeedsAttention: false,
+    aiUsage: { input: 0, output: 0, calls: 0, available: true },
     tokens: null,
     hasKey: false,
     provider: "anthropic",
@@ -281,10 +285,10 @@
   const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
 
   // ---------------------------------------------------------------- AI plan
-  function pageSummary() {
+  function pageSummary({ fullPage = false } = {}) {
     const vh = innerHeight;
     const interesting = state.entries.filter((e) => {
-      if (e.rect.y > vh * 4) return false;
+      if (!fullPage && e.rect.y > vh * 4) return false;
       const { el, cs, text, rect } = e;
       if (text.length > 1) return true;
       if (el.matches("a, button, input, select, textarea, img, svg")) return true;
@@ -319,6 +323,8 @@
           gap: cs.gap,
           maxWidth: cs.maxWidth,
           parentId: state.byElement.get(e.el.parentElement)?.id ?? null,
+          containsEmoji: /\p{Extended_Pictographic}/u.test(e.text),
+          usesGradient: /gradient\(/i.test(cs.backgroundImage),
         };
         if (e.text) o.text = e.text.slice(0, 180);
         if (e.leaf && e.text) o.leaf = true;
@@ -340,12 +346,22 @@
     const out = [];
     const sanitizeStyles = (raw, allow, entry) => {
       const styles = {};
+      const display = getComputedStyle(entry.el).display;
+      const parentDisplay = entry.el.parentElement ? getComputedStyle(entry.el.parentElement).display : "";
+      const flexContainer = display === "flex" || display === "inline-flex";
+      const gridContainer = display === "grid" || display === "inline-grid";
+      const flexItem = parentDisplay === "flex" || parentDisplay === "inline-flex";
+      const gridItem = parentDisplay === "grid" || parentDisplay === "inline-grid";
       for (const [k, v] of Object.entries(raw || {})) {
         const prop = String(k).toLowerCase().trim();
         const val = String(v).trim();
         if (!allow.has(prop) || !val || val.length >= 140 || !SAFE_VALUE.test(val) || /url\(|expression|javascript:/i.test(val)) continue;
         if (!window.CSS?.supports(prop, val)) continue;
-        if (prop === "display" && !new Set(["block", "flex", "grid", "inline-flex", "inline-block"]).has(val.toLowerCase())) continue;
+        if (prop.startsWith("grid-") && !gridContainer) continue;
+        if (["flex-direction", "flex-wrap"].includes(prop) && !flexContainer) continue;
+        if (["flex-grow", "flex-shrink", "flex-basis"].includes(prop) && !flexItem) continue;
+        if (["gap", "row-gap", "column-gap", "align-items", "justify-content"].includes(prop) && !flexContainer && !gridContainer) continue;
+        if (["align-self", "justify-self"].includes(prop) && !flexItem && !gridItem) continue;
         if (prop === "flex-direction" && !new Set(["row", "column"]).has(val.toLowerCase())) continue;
         if (prop === "flex-wrap" && !new Set(["wrap", "nowrap"]).has(val.toLowerCase())) continue;
         if (prop === "grid-auto-flow" && !new Set(["row", "column", "dense", "row dense", "column dense"]).has(val.toLowerCase())) continue;
@@ -386,13 +402,17 @@
       }
       return styles;
     };
-    for (const c of plan.changes.slice(0, 40)) {
+    for (const c of plan.changes.slice(0, 24)) {
       const entry = state.byId.get(+c.id);
       if (!entry || !entry.el.isConnected) continue;
       const styles = sanitizeStyles(c.styles, ALLOWED, entry);
       const mobileStyles = state.includeMobile ? sanitizeStyles(c.mobileStyles, MOBILE_ALLOWED, entry) : {};
       let text = null;
-      if (typeof c.text === "string" && c.text.trim() && entry.leaf && c.text.length < 241) text = c.text.trim();
+      if (typeof c.text === "string" && c.text.trim() && entry.leaf && c.text.length < 241) {
+        const desired = c.text.trim();
+        const current = (entry.el.textContent || "").replace(/\s+/g, " ").trim();
+        if (desired.replace(/\s+/g, " ") !== current) text = desired;
+      }
       if (!Object.keys(styles).length && !Object.keys(mobileStyles).length && !text) continue;
       const role = ROLES[c.role] ? c.role : text ? "copy" : "color";
       out.push({ el: entry.el, role, styles, mobileStyles, text, reason: String(c.reason || "").slice(0, 200) });
@@ -640,6 +660,17 @@
     .panel p { margin: 8px 0 0; color: #3b414b; }
     .panel .muted { color: #5c6470; font-size: 12px; }
     .panel .btns { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+    .panel .btns.compact { gap: 5px; margin-top: 8px; }
+    .panel .result-meta { font-size: 12px; color: #5c6470; }
+    .panel .result-meta span { font-weight: 400; }
+    .panel .run-report, .panel .redesign-options { margin-top: 8px; padding-top: 1px; }
+    .panel .run-report summary, .panel .redesign-options summary { list-style: none; display: flex; align-items: center; gap: 6px; width: fit-content;
+      padding: 4px 0; font-size: 11.5px; font-weight: 600; }
+    .panel .run-report summary::-webkit-details-marker, .panel .redesign-options summary::-webkit-details-marker { display: none; }
+    .panel .run-report summary::before, .panel .redesign-options summary::before { content: "›"; display: inline-block; font-size: 16px; line-height: 12px; transition: transform .15s; }
+    .panel .run-report[open] summary::before, .panel .redesign-options[open] summary::before { transform: rotate(90deg); }
+    .panel .report-content { padding-top: 2px; }
+    .panel .report-content p:first-child { margin-top: 4px; }
     .panel .device-select { min-width: 0; flex: 1 1 180px; font: inherit; font-size: 12px; padding: 7px 9px; border: 1px solid #d5d9e0; border-radius: 7px; color: #20242b; background: #f6f7f9; }
     .panel button.b { font: inherit; font-weight: 600; font-size: 12.5px; padding: 7px 11px; border-radius: 7px; cursor: pointer;
       border: 1px solid #d5d9e0; background: #fff; color: #20242b; }
@@ -651,6 +682,7 @@
     .panel .skill-select { display: block; margin-top: 10px; color: #5c6470; font-size: 11.5px; font-weight: 600; }
     .panel .skill-select select { display: block; width: 100%; margin-top: 4px; font: inherit; font-weight: 500; font-size: 12.5px; padding: 7px 9px;
       border: 1px solid #d5d9e0; border-radius: 7px; color: #20242b; background: #f6f7f9; }
+    .panel .skill-source { display: inline-block; margin-top: 4px; color: #5c6470; font-size: 11px; }
     .panel .mobile-option { display: flex; align-items: flex-start; gap: 8px; margin-top: 10px; padding: 8px; border: 1px solid #d5d9e0; border-radius: 7px; cursor: pointer; }
     .panel .mobile-option input { margin: 2px 0 0; accent-color: #e5254b; }
     .panel .mobile-option b, .panel .mobile-option small { display: block; }
@@ -676,7 +708,9 @@
       .panel .seg button[aria-pressed=true] { background: #e8eaee; color: #1f2227; }
       .panel input[type=text], .panel .skill-select select { background: #16181c; color: #e8eaee; border-color: #343840; }
       .panel .device-select { background: #16181c; color: #e8eaee; border-color: #343840; }
+      .panel .result-meta { color: #9aa3ae; }
       .panel .skill-select { color: #9aa3ae; }
+      .panel .skill-source { color: #9aa3ae; }
       .panel .mobile-option { border-color: #343840; }
       .panel .mobile-option small { color: #9aa3ae; }
       .panel .bar { background: #343840; } .panel .err { color: #ff6b85; }
@@ -820,7 +854,12 @@
     let r = docRect(c.el);
     if (state.follow && !inView(r)) {
       scrollTo({ top: Math.max(0, r.y - innerHeight * 0.3), behavior: reducedMotion ? "auto" : "smooth" });
-      await wait(T(450));
+      const deadline = performance.now() + (reducedMotion ? 120 : 1400);
+      while (performance.now() < deadline) {
+        await wait(60);
+        r = docRect(c.el);
+        if (inView(r)) break;
+      }
       r = docRect(c.el);
     }
     // Point at the element and select it.
@@ -877,6 +916,7 @@
     const pending = changes.map((c) => ({ c, y: docRect(c.el).y })).sort((a, b) => a.y - b.y);
     const total = pending.length;
     let done = 0;
+    state.progress = { total, done };
     render({ total, done });
     const roles = [...new Set(pending.map((p) => p.c.role))];
 
@@ -889,6 +929,7 @@
         const [{ c }] = pending.splice(mine, 1);
         if (c.el.isConnected) await doTask(c);
         done++;
+        state.progress = { total, done };
         if (alive(token)) render({ total, done });
       }
     };
@@ -937,11 +978,43 @@
     } catch { return null; } finally { host.style.visibility = ""; }
   }
 
+  function requestAI(message) {
+    return new Promise((resolve, reject) => {
+      const port = chrome.runtime.connect({ name: "redline-ai" });
+      let settled = false;
+      port.onMessage.addListener((response) => {
+        if (settled) return;
+        settled = true;
+        port.disconnect();
+        response?.ok ? resolve(response) : reject(new Error(response?.error || "The AI request failed."));
+      });
+      port.onDisconnect.addListener(() => {
+        if (settled) return;
+        settled = true;
+        reject(new Error("Lost connection to the extension. Try again."));
+      });
+      port.postMessage(message);
+    });
+  }
+
+  function addAIUsage(usage) {
+    state.aiUsage.calls++;
+    if (!usage || !Number.isFinite(+usage.input) || !Number.isFinite(+usage.output)) {
+      state.aiUsage.available = false;
+      return;
+    }
+    state.aiUsage.input += +usage.input;
+    state.aiUsage.output += +usage.output;
+  }
+
   async function aiRedesign(brief, skillId, includeMobile) {
     const token = ++state.runToken;
     state.phase = "thinking";
     state.error = "";
     state.postScan = null;
+    state.reviewSummary = "";
+    state.reviewNeedsAttention = false;
+    state.aiUsage = { input: 0, output: 0, calls: 0, available: true };
     render({ status: "Taking a screenshot…" });
     // Scan the page as it is now (including any quick fixes already applied).
     scan();
@@ -952,12 +1025,9 @@
     startOrbit();
     let plan, changes;
     try {
-      plan = await new Promise((resolve, reject) => {
-        const port = chrome.runtime.connect({ name: "redline-ai" });
-        port.onMessage.addListener((m) => { m.ok ? resolve(m.plan) : reject(new Error(m.error)); port.disconnect(); });
-        port.onDisconnect.addListener(() => reject(new Error("Lost connection to the extension. Try again.")));
-        port.postMessage({ type: "redesign", page, screenshot: shot, brief, skillId, includeMobile });
-      });
+      const response = await requestAI({ type: "redesign", page, screenshot: shot, brief, skillId, includeMobile });
+      plan = response.plan;
+      addAIUsage(response.usage);
       changes = validatePlan(plan);
     } catch (err) {
       stopOrbit();
@@ -992,6 +1062,50 @@
       if (state.runToken !== checkToken || !host.isConnected) return;
       postRedesignScan();
     }
+
+    // Have the same provider inspect the updated page. It can suggest small repairs;
+    // allow at most two animated repair passes to prevent an endless redesign loop.
+    for (let reviewRound = 0; reviewRound < 3 && host.isConnected; reviewRound++) {
+      const reviewToken = state.runToken;
+      state.phase = "thinking";
+      render({ status: `Rescanning and asking ${state.provider === "openai" ? "OpenAI" : "Claude"} to review the updated page…` });
+      scan();
+      const reviewPage = pageSummary({ fullPage: true });
+      const reviewShot = await screenshot();
+      if (!alive(reviewToken)) return;
+      try {
+        const response = await requestAI({ type: "review", page: reviewPage, screenshot: reviewShot, brief, skillId, includeMobile });
+        if (!alive(reviewToken)) return;
+        addAIUsage(response.usage);
+        const reviewPlan = response.plan || {};
+        state.reviewSummary = String(reviewPlan.summary || (reviewPlan.ok ? "The updated page passed the AI review." : "The review found issues worth checking.")).slice(0, 300);
+        const needsRepair = reviewPlan.ok === false && Array.isArray(reviewPlan.changes) && reviewPlan.changes.length > 0;
+        if (!needsRepair) {
+          state.reviewNeedsAttention = reviewPlan.ok === false;
+          break;
+        }
+        if (reviewRound >= 2) {
+          state.reviewNeedsAttention = true;
+          state.reviewSummary += " Further changes were not applied; inspect the result before exporting.";
+          break;
+        }
+        const repairs = validatePlan(reviewPlan);
+        if (!repairs.length) {
+          state.reviewNeedsAttention = true;
+          state.reviewSummary += " No safe repair could be applied automatically.";
+          break;
+        }
+        const repairPass = run(repairs, { deferDone: true });
+        const repairToken = state.runToken;
+        await repairPass;
+        if (state.runToken !== repairToken || !host.isConnected) return;
+        postRedesignScan();
+      } catch (error) {
+        state.reviewNeedsAttention = true;
+        state.reviewSummary = `AI review did not finish: ${String(error?.message || error).slice(0, 220)}`;
+        break;
+      }
+    }
     state.phase = "done";
     state.showingAfter = true;
     render();
@@ -1019,33 +1133,36 @@
     } else if (p === "thinking") {
       body = `<p>${esc(extra.status || "Working…")}</p><div class="btns"><button class="b" data-act="cancel">Cancel</button></div>`;
     } else if (p === "working") {
-      const { total = 1, done = 0 } = extra;
+      const { total = state.progress?.total || 1, done = state.progress?.done || 0 } = extra;
       body = `${state.aiSummary ? `<p>${esc(state.aiSummary)}</p>` : ""}
         <p class="muted">Applied ${done} of ${total} changes.</p>
         <div class="bar"><div style="width:${(done / total) * 100}%"></div></div>
-        <div class="btns">${speedSeg()}<button class="b" data-act="skip">Skip to end</button></div>`;
+        <div class="btns">${speedSeg()}<button class="b ${state.follow ? "primary" : ""}" data-act="follow" aria-pressed="${state.follow}">Auto-scroll ${state.follow ? "on" : "off"}</button><button class="b" data-act="skip">Skip to end</button></div>`;
     } else if (p === "done") {
       const n = state.applied.length;
       const mobileRules = state.applied.reduce((total, change) => total + Object.keys(change.mobileStyles || {}).length, 0);
-      body = `${state.aiSummary ? `<p>${esc(state.aiSummary)}</p>` : ""}
-        <p>${n} change${n === 1 ? "" : "s"} applied. Hover a pin to see why.</p>
-        ${state.postScan ? `<p class="muted">Post-redesign scan complete: ${state.postScan.clippedText ? `${state.postScan.clippedText} text area${state.postScan.clippedText === 1 ? " may" : "s may"} be clipped. ` : "No clipped text detected. "}${state.postScan.suggestions ? `${state.postScan.suggestions} other readability or layout improvement${state.postScan.suggestions === 1 ? "" : "s"} found.` : "No other quick fixes found."}</p>` : ""}
-        ${mobileRules ? `<p class="muted">${mobileRules} responsive layout rule${mobileRules === 1 ? "" : "s"} added for screens 640px wide and below.</p>` : ""}
+      const tokenTotal = state.aiUsage.input + state.aiUsage.output;
+      const resultMeta = `${n} change${n === 1 ? "" : "s"} applied${state.aiUsage.calls && state.aiUsage.available ? ` · ${tokenTotal.toLocaleString()} tokens` : ""}${state.reviewSummary ? (state.reviewNeedsAttention ? " · Review needs attention" : " · AI checked") : ""}`;
+      body = `<p class="result-meta"><b>${resultMeta}</b> <span>Hover a pin to see why.</span></p>
+        <details class="run-report"><summary>Review and scan details</summary><div class="report-content">
+          ${state.aiSummary ? `<p>${esc(state.aiSummary)}</p>` : ""}
+          ${state.postScan ? `<p class="muted">Post-redesign scan: ${state.postScan.clippedText ? `${state.postScan.clippedText} text area${state.postScan.clippedText === 1 ? " may" : "s may"} be clipped. ` : "No clipped text detected. "}${state.postScan.suggestions ? `${state.postScan.suggestions} other readability or layout improvement${state.postScan.suggestions === 1 ? "" : "s"} found.` : "No other quick fixes found."}</p>` : ""}
+          ${state.reviewSummary ? `<p class="${state.reviewNeedsAttention ? "err" : "muted"}">AI review: ${esc(state.reviewSummary)}</p>` : ""}
+          ${state.aiUsage.calls ? `<p class="muted">AI usage: ${state.aiUsage.available ? `${tokenTotal.toLocaleString()} tokens (${state.aiUsage.input.toLocaleString()} input, ${state.aiUsage.output.toLocaleString()} output across ${state.aiUsage.calls} calls)` : "provider did not return token counts"}.</p>` : ""}
+          ${mobileRules ? `<p class="muted">${mobileRules} responsive layout rule${mobileRules === 1 ? "" : "s"} added for screens 640px wide and below.</p>` : ""}
+        </div></details>
         ${mobileDeviceControl()}
-        <div class="btns">
+        <div class="btns compact">
           <div class="seg" role="group" aria-label="Compare">
             <button data-act="before" aria-pressed="${!state.showingAfter}">Before</button>
             <button data-act="after" aria-pressed="${state.showingAfter}">After</button>
           </div>
           <button class="b" data-act="pins">${layer.classList.contains("pins-off") ? "Show pins" : "Hide pins"}</button>
         </div>
-        <div class="btns">
-          <button class="b primary" data-act="export">Export CSS</button>
-          <button class="b" data-act="prompt">Copy as prompt</button>
-        </div>
-        ${state.applied.length && window.__redlineRebuild?.restart ? `<div class="btns"><button class="b primary" data-act="rebuild">Replay updated page</button></div>` : ""}
-        ${state.hasKey ? `${designSkillControl()}${mobileLayoutControl()}<input type="text" id="brief" placeholder="Direction for the AI (optional)" aria-label="Direction for the AI redesign">
-        <div class="btns"><button class="b" data-act="ai">${state.aiSummary ? "Redesign again" : "Redesign with AI"}</button><button class="b" data-act="reset">Undo all</button></div>`
+        <div class="btns compact export-actions"><button class="b primary" data-act="export">Export CSS</button><button class="b" data-act="png">Full-page PNG</button><button class="b" data-act="prompt" aria-label="Copy implementation brief">Copy brief</button></div>
+        ${state.applied.length && window.__redlineRebuild?.restart ? `<div class="btns compact"><button class="b primary" data-act="rebuild">Replay updated page</button></div>` : ""}
+        ${state.hasKey ? `<details class="redesign-options"><summary>Redesign options</summary>${designSkillControl()}${mobileLayoutControl()}<input type="text" id="brief" placeholder="Direction for the AI (optional)" aria-label="Direction for the AI redesign"></details>
+        <div class="btns compact"><button class="b" data-act="ai">${state.aiSummary ? "Redesign again" : "Redesign with AI"}</button><button class="b" data-act="reset">Undo all</button></div>`
         : `<div class="btns"><button class="b" data-act="options">Connect AI for redesigns</button><button class="b" data-act="reset">Undo all</button></div>`}
         ${extra.flash ? `<p class="muted">${esc(extra.flash)}</p>` : ""}`;
     }
@@ -1055,12 +1172,14 @@
 
   function designSkillControl() {
     if (!state.designSkills.length) return "";
-    const selected = state.designSkills.some((skill) => skill.id === state.activeDesignSkill)
-      ? state.activeDesignSkill
-      : "balanced";
+    const active = state.designSkills.find((skill) => skill.id === state.activeDesignSkill) || state.designSkills.find((skill) => skill.id === "balanced");
+    const selected = active?.id || "balanced";
+    const source = active?.sourceUrl && /^https:\/\/(github\.com|raw\.githubusercontent\.com)\//i.test(active.sourceUrl)
+      ? `<a class="skill-source" href="${esc(active.sourceUrl)}" target="_blank" rel="noopener noreferrer">View skill source (.md)</a>`
+      : "";
     return `<label class="skill-select"><span>Design skill</span><select id="design-skill" aria-label="Choose a design skill">${state.designSkills.map((skill) =>
       `<option value="${esc(skill.id)}" ${skill.id === selected ? "selected" : ""}>${esc(skill.name)}</option>`
-    ).join("")}</select></label>`;
+    ).join("")}</select></label>${source}`;
   }
 
   function mobileLayoutControl() {
@@ -1245,11 +1364,19 @@
     }
     if (act === "options") return chrome.runtime.sendMessage({ type: "openOptions" });
     if (act === "skip") { state.skip = true; return; }
+    if (act === "follow") {
+      state.follow = !state.follow;
+      b.textContent = `Auto-scroll ${state.follow ? "on" : "off"}`;
+      b.classList.toggle("primary", state.follow);
+      b.setAttribute("aria-pressed", String(state.follow));
+      return;
+    }
     if (act === "cancel") { state.runToken++; stopOrbit(); state.phase = state.applied.length ? "done" : "ready"; return render(); }
     if (act === "before") { restoreAll(); state.showingAfter = false; layer.classList.add("pins-off"); layoutPins(); return render(); }
     if (act === "after") { reapplyAll(); state.showingAfter = true; layer.classList.remove("pins-off"); layoutPins(); return render(); }
     if (act === "pins") { layer.classList.toggle("pins-off"); return render(); }
     if (act === "export") return exportCSS();
+    if (act === "png") return exportPNG();
     if (act === "prompt") return copyPrompt();
     if (act === "mobile-preview") {
       state.mobilePreset = panel.querySelector("#mobile-device")?.value || state.mobilePreset;
@@ -1357,16 +1484,176 @@
     }
   }
 
+  async function exportPNG() {
+    const previousVisibility = host.style.visibility;
+    const rootStyle = document.documentElement.style;
+    const bodyStyle = document.body.style;
+    const oldRootScroll = [rootStyle.getPropertyValue("scroll-behavior"), rootStyle.getPropertyPriority("scroll-behavior")];
+    const oldBodyScroll = [bodyStyle.getPropertyValue("scroll-behavior"), bodyStyle.getPropertyPriority("scroll-behavior")];
+    const oldX = window.scrollX;
+    const oldY = window.scrollY;
+    let objectUrl = "";
+    const floatingStyles = [];
+    host.style.visibility = "hidden";
+    rootStyle.setProperty("scroll-behavior", "auto", "important");
+    bodyStyle.setProperty("scroll-behavior", "auto", "important");
+    try {
+      const viewportWidth = window.innerWidth;
+      const viewportHeight = window.innerHeight;
+      if (!viewportWidth || !viewportHeight) throw new Error("The page viewport is unavailable for capture.");
+      const pageHeight = () => Math.max(document.documentElement.scrollHeight, document.body?.scrollHeight || 0, viewportHeight);
+      let fullHeight = pageHeight();
+      let canvas = null;
+      let context = null;
+      let outputScale = 1;
+      const maxSide = 32767;
+      const maxPixels = 120_000_000;
+
+      for (let top = 0; top < fullHeight; top += viewportHeight) {
+        window.scrollTo(0, top);
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(resolve, 90))));
+        fullHeight = Math.max(fullHeight, pageHeight());
+        // Chrome limits captureVisibleTab to two calls per second.
+        await new Promise((resolve) => setTimeout(resolve, 520));
+        const result = await chrome.runtime.sendMessage({ type: "exportPng" });
+        if (!result?.ok || !result.dataUrl) throw new Error(result?.error || "Couldn't capture the full page.");
+        const image = await createImageBitmap(await (await fetch(result.dataUrl)).blob());
+
+        if (!canvas) {
+          const nativeScale = image.width / viewportWidth;
+          outputScale = Math.min(
+            nativeScale,
+            maxSide / viewportWidth,
+            maxSide / fullHeight,
+            Math.sqrt(maxPixels / (viewportWidth * fullHeight)),
+          );
+          canvas = document.createElement("canvas");
+          canvas.width = Math.max(1, Math.ceil(viewportWidth * outputScale));
+          canvas.height = Math.max(1, Math.ceil(fullHeight * outputScale));
+          context = canvas.getContext("2d");
+          if (!context) throw new Error("Couldn't create the image for export.");
+        } else {
+          const neededHeight = Math.ceil(fullHeight * outputScale);
+          if (neededHeight > canvas.height) {
+            if (neededHeight > maxSide || canvas.width * neededHeight > maxPixels) {
+              image.close();
+              throw new Error("This page is too tall to fit in one PNG. Try exporting a shorter section.");
+            }
+            const expanded = document.createElement("canvas");
+            expanded.width = canvas.width;
+            expanded.height = neededHeight;
+            const expandedContext = expanded.getContext("2d");
+            if (!expandedContext) {
+              image.close();
+              throw new Error("Couldn't extend the full-page image.");
+            }
+            expandedContext.drawImage(canvas, 0, 0);
+            canvas = expanded;
+            context = expandedContext;
+          }
+        }
+
+        const actualTop = window.scrollY;
+        const cropTopCss = Math.max(0, top - actualTop);
+        const drawHeightCss = Math.max(0, Math.min(viewportHeight - cropTopCss, fullHeight - top));
+        if (drawHeightCss > 0) {
+          const sourceScale = image.height / viewportHeight;
+          context.drawImage(
+            image,
+            0, Math.round(cropTopCss * sourceScale), image.width, Math.min(image.height, Math.ceil(drawHeightCss * sourceScale)),
+            0, Math.round(top * outputScale), canvas.width, Math.ceil(drawHeightCss * outputScale),
+          );
+        }
+        image.close();
+
+        if (top === 0) {
+          for (const element of document.querySelectorAll("body *")) {
+            if (element === host || element === document.body) continue;
+            const position = getComputedStyle(element).position;
+            if (position !== "fixed" && position !== "sticky") continue;
+            floatingStyles.push([element, element.style.getPropertyValue("visibility"), element.style.getPropertyPriority("visibility")]);
+            element.style.setProperty("visibility", "hidden", "important");
+          }
+        }
+      }
+
+      const png = await new Promise((resolve, reject) => canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("Couldn't encode the full-page PNG.")), "image/png"));
+      objectUrl = URL.createObjectURL(png);
+      const link = document.createElement("a");
+      link.href = objectUrl;
+      link.download = `redline-${location.hostname || "page"}-redesign.png`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      render({ flash: `Downloaded a full-page PNG (${canvas.width} × ${canvas.height}).` });
+    } catch (error) {
+      render({ flash: error.message || "Couldn't export a full-page PNG." });
+    } finally {
+      window.scrollTo(oldX, oldY);
+      for (const [style, [value, priority]] of [[rootStyle, oldRootScroll], [bodyStyle, oldBodyScroll]]) {
+        if (value) style.setProperty("scroll-behavior", value, priority);
+        else style.removeProperty("scroll-behavior");
+      }
+      for (const [element, value, priority] of floatingStyles) {
+        if (!element.isConnected) continue;
+        if (value) element.style.setProperty("visibility", value, priority);
+        else element.style.removeProperty("visibility");
+      }
+      host.style.visibility = previousVisibility;
+      if (objectUrl) setTimeout(() => URL.revokeObjectURL(objectUrl), 30_000);
+    }
+  }
+
   async function copyPrompt() {
     const items = [...merged()].map(([el, m], i) => {
-      const text = (el.textContent || "").replace(/\s+/g, " ").trim().slice(0, 60);
-      const styles = Object.entries(m.styles).map(([p, v]) => `${p}: ${v}`).join("; ");
-      const mobile = Object.entries(m.mobileStyles).map(([p, v]) => `${p}: ${v}`).join("; ");
-      return `${i + 1}. <${el.tagName.toLowerCase()}> "${text}" (selector: ${selectorFor(el)})\n   ${styles}${mobile ? `\n   Mobile (<=640px): ${mobile}` : ""}${m.text != null ? `\n   Change text to: "${m.text}"` : ""}\n   Why: ${m.reasons.join(" ")}`;
+      const excerpt = (el.textContent || "").replace(/\s+/g, " ").trim().slice(0, 100);
+      const old = state.originals.get(el);
+      const styles = Object.entries(m.styles).map(([p, v]) => {
+        const before = old?.get(p)?.[0] || getComputedStyle(el).getPropertyValue(p);
+        return `  - ${p}: ${before} → ${v}`;
+      });
+      const mobile = Object.entries(m.mobileStyles).map(([p, v]) => `  - ${p}: ${v}`);
+      return [
+        `### ${i + 1}. ${el.tagName.toLowerCase()} — ${excerpt || "(no text)"}`,
+        `Target hint: ${selectorFor(el)} (verify against the actual source; this selector is only a page clue)`,
+        m.reasons.length ? `Design reason: ${m.reasons.join(" ")}` : "",
+        styles.length ? `Desktop changes:\n${styles.join("\n")}` : "",
+        mobile.length ? `Mobile changes (max-width: 640px):\n${mobile.join("\n")}` : "",
+        m.text != null ? `Copy change: ${JSON.stringify(m.text)}` : "",
+      ].filter(Boolean).join("\n");
     });
-    const prompt = `Apply these design changes to the source code of ${location.href}. Use the project's existing styling approach (classes, design tokens, Tailwind, CSS modules or whatever it uses) rather than !important overrides, and reuse existing variables where they match.${state.aiSummary ? `\n\nOverall direction: ${state.aiSummary}` : ""}${state.tokens ? `\n\nSuggested tokens: ${JSON.stringify(state.tokens)}` : ""}\n\n${items.join("\n\n")}`;
+    const prompt = `# Implement this Redline design review
+
+Target page: ${location.href}
+Page title: ${document.title}
+
+## Goal
+Implement the following visual and copy improvements in the source code that produces this page. The notes describe the intended result; they are not framework-specific code.
+
+## Instructions for the coding assistant
+- First inspect the project and identify its actual language, framework, component structure, routing, styling system, and icon dependencies. Do not assume React, Tailwind, plain HTML/CSS, or any other stack.
+- Find the source components and styles that render each target. Treat the selectors below as clues only; do not paste them blindly into production CSS.
+- Make the changes in the project's existing architecture and conventions. Reuse existing design tokens, components, and icon library when available. Preserve behavior, links, forms, accessibility, semantic structure, and responsive behavior.
+- Keep the site's identity, audience, and content order. Avoid generic AI styling: no decorative gradients, emoji used as interface icons, excessive pills/cards, or arbitrary font swaps. Prefer the project's existing icon set; if it has none, use consistent Lucide SVG icons (https://lucide.dev) only where an icon improves meaning.
+- Implement the requested changes rather than returning a mockup or CSS snippet. Do not invent facts or remove existing content.
+- After implementation, inspect the affected desktop and mobile layouts, fix overflow/clipping, and run the project's relevant checks.
+
+## Overall direction
+${state.aiSummary || "Improve clarity and usability while preserving the page's existing visual identity."}
+${state.tokens ? `\nSuggested design tokens (adapt to the project's system):\n${JSON.stringify(state.tokens, null, 2)}` : ""}
+${state.reviewSummary ? `\nAI review result: ${state.reviewSummary}` : ""}
+
+## Targeted changes
+${items.length ? items.join("\n\n") : "No element-level changes were captured."}
+
+## Acceptance checks
+- Main page sections keep their intended alignment and content order.
+- Text remains visible and readable at desktop and phone widths.
+- Buttons, navigation, forms, and other interactions still work.
+- Icons use one consistent library/style; avoid substituting emoji.
+- No unnecessary visual effects or new product claims are introduced.`;
     const ok = await copyText(prompt);
-    render({ flash: ok ? "Prompt copied. Paste it into Claude Code or your coding tool of choice." : "Couldn't copy on this page." });
+    render({ flash: ok ? "Implementation brief copied. Paste it into any coding assistant with the page source project open." : "Couldn't copy the implementation brief on this page." });
   }
 
   async function copyText(text) {
@@ -1394,6 +1681,9 @@
     state.aiSummary = "";
     state.tokens = null;
     state.postScan = null;
+    state.reviewSummary = "";
+    state.reviewNeedsAttention = false;
+    state.aiUsage = { input: 0, output: 0, calls: 0, available: true };
     closeMobilePreview();
     layer.classList.remove("pins-off");
     scan();

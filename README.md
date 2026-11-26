@@ -15,14 +15,16 @@ Redline is a Chrome extension for reviewing and improving live web pages. Swarm 
 - Audit contrast, body text, line lengths, heading structure, image descriptions, and tap targets.
 - Ask for page-level and section-level changes to hierarchy, layout, type, spacing, colors, and short copy.
 - Pick a built-in or installed design skill. Skill instructions are passed as provider-neutral prompt text, so the same skills work with Anthropic and OpenAI.
+- Install a public Markdown design skill from a GitHub file link; built-in skills can link back to their source.
 - Generate responsive layout rules and use **Preview phone** to inspect a static copy at several common phone CSS viewport sizes.
-- Rescan after the redesign and report text that appears clipped before marking the run complete.
-- Compare before and after, undo the edits, export CSS, or copy an implementation prompt.
+- Auto-scroll with the cursor crew as changes are animated. Text that already matches is left alone instead of being deleted and retyped.
+- Rescan after redesign, ask the selected AI provider for a visual review, apply a bounded number of small repairs when needed, and show provider-reported token usage.
+- Compare before and after, undo the edits, export CSS or a stitched full-page PNG, or copy a framework-neutral implementation brief for a coding assistant.
 - Turn on soft scan sounds after the scan begins; audio starts only from that click.
 
 ## Privacy
 
-Quick fixes and page scanning stay in the browser. For an AI redesign, Redline sends the screenshot, selected page details, prompt direction, and chosen design-skill instructions to the provider configured in Options. The provider key is stored in this browser's extension storage and sent to that provider for requests.
+Quick fixes and page scanning stay in the browser. For an AI redesign and its review, Redline sends screenshots, selected page details, prompt direction, and chosen design-skill instructions to the provider configured in Options. GitHub skill links are fetched from public `raw.githubusercontent.com` files. The provider key is stored in this browser's extension storage and sent to that provider for requests.
 
 ## Source layout
 

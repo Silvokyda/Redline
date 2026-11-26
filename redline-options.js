@@ -25,6 +25,14 @@ function renderSkills(custom) {
     const description = document.createElement("p");
     description.textContent = skill.description || skill.instructions;
     copy.append(name, description);
+    if (skill.sourceUrl && /^https:\/\/(github\.com|raw\.githubusercontent\.com)\//i.test(skill.sourceUrl)) {
+      const source = document.createElement("a");
+      source.href = skill.sourceUrl;
+      source.target = "_blank";
+      source.rel = "noopener noreferrer";
+      source.textContent = "View skill source (.md)";
+      copy.append(source);
+    }
     row.append(copy);
     if (skill.id?.startsWith("custom-")) {
       const remove = document.createElement("button");
@@ -60,11 +68,12 @@ function normalizeImportedSkills(value) {
       name,
       description: description.slice(0, 180),
       instructions,
+      ...(typeof item?.sourceUrl === "string" && /^https:\/\/(github\.com|raw\.githubusercontent\.com)\//i.test(item.sourceUrl) ? { sourceUrl: item.sourceUrl } : {}),
     };
   });
 }
 
-function markdownSkill(fileName, markdown) {
+function markdownSkill(fileName, markdown, sourceUrl = "") {
   let body = markdown.trim();
   const metadata = {};
   const frontmatter = body.match(/^---\s*\r?\n([\s\S]*?)\r?\n---\s*(?:\r?\n|$)/);
@@ -77,7 +86,44 @@ function markdownSkill(fileName, markdown) {
   }
   const baseName = fileName.replace(/\.(md|markdown|txt)$/i, "").replace(/[-_]+/g, " ").trim();
   const name = metadata.name || (baseName.toLowerCase() === "skill" ? "Imported Claude skill" : baseName);
-  return normalizeImportedSkills({ name, description: metadata.description || "Imported Markdown design skill", instructions: body });
+  return normalizeImportedSkills({ name, description: metadata.description || "Imported Markdown design skill", instructions: body, sourceUrl });
+}
+
+function parseGithubSkillUrl(input) {
+  const url = new URL(input.trim());
+  if (url.protocol !== "https:") throw new Error("Use a public HTTPS GitHub link.");
+  if (url.hostname === "github.com") {
+    const match = url.pathname.match(/^\/([^/]+)\/([^/]+)\/blob\/([^/]+)\/(.+)$/);
+    if (!match) throw new Error("Use a GitHub file link with /blob/branch/path/SKILL.md.");
+    const [, owner, repo, branch, path] = match;
+    if (!/\.(md|markdown|txt|json)$/i.test(path)) throw new Error("The link must point to a Markdown, text, or JSON skill file.");
+    return {
+      fetchUrl: `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${path}`,
+      sourceUrl: `https://github.com/${owner}/${repo}/blob/${branch}/${path}`,
+    };
+  }
+  if (url.hostname === "raw.githubusercontent.com" && /\.(md|markdown|txt|json)$/i.test(url.pathname)) {
+    const parts = url.pathname.split("/").filter(Boolean);
+    if (parts.length < 4) throw new Error("Use a raw GitHub link to a skill file.");
+    return { fetchUrl: url.href, sourceUrl: `https://github.com/${parts[0]}/${parts[1]}/blob/${parts[2]}/${parts.slice(3).join("/")}` };
+  }
+  throw new Error("Only public github.com file links are supported.");
+}
+
+async function saveSkills(imported) {
+  const existing = await customSkills();
+  const names = new Set(existing.map((skill) => skill.name.toLocaleLowerCase()));
+  const unique = imported.filter((skill) => {
+    const key = skill.name.toLocaleLowerCase();
+    if (names.has(key)) return false;
+    names.add(key);
+    return true;
+  });
+  if (!unique.length) throw new Error("Those skill names are already installed.");
+  const all = [...existing, ...unique];
+  await chrome.storage.local.set({ redlineCustomSkills: all });
+  renderSkills(all);
+  skillStatus(`Installed ${unique.length} design skill${unique.length === 1 ? "" : "s"}.`, "ok");
 }
 
 function showProvider(p) {
@@ -138,23 +184,36 @@ $("#skillFile").addEventListener("change", async (e) => {
     const imported = /\.json$/i.test(file.name)
       ? normalizeImportedSkills(JSON.parse(text))
       : markdownSkill(file.name, text);
-    const existing = await customSkills();
-    const names = new Set(existing.map((skill) => skill.name.toLocaleLowerCase()));
-    const unique = imported.filter((skill) => {
-      const key = skill.name.toLocaleLowerCase();
-      if (names.has(key)) return false;
-      names.add(key);
-      return true;
-    });
-    if (!unique.length) throw new Error("Those skill names are already installed.");
-    const all = [...existing, ...unique];
-    await chrome.storage.local.set({ redlineCustomSkills: all });
-    renderSkills(all);
-    skillStatus(`Installed ${unique.length} design skill${unique.length === 1 ? "" : "s"}.`, "ok");
+    await saveSkills(imported);
   } catch (err) {
     skillStatus(err.message || "Couldn't install that skill file.", "err");
   } finally {
     e.target.value = "";
+  }
+});
+
+$("#installSkillUrl").addEventListener("click", async () => {
+  try {
+    const { fetchUrl, sourceUrl } = parseGithubSkillUrl($("#skillUrl").value);
+    skillStatus("Fetching public skill file…");
+    const response = await fetch(fetchUrl, { headers: { Accept: "text/plain, application/json" } });
+    if (!response.ok) throw new Error(`GitHub returned ${response.status}. Check that the file is public.`);
+    const text = await response.text();
+    if (text.length > 120000) throw new Error("That skill file is too large (maximum 120 KB).");
+    const path = new URL(fetchUrl).pathname;
+    let imported;
+    if (/\.json$/i.test(path)) {
+      const value = JSON.parse(text);
+      imported = normalizeImportedSkills(Array.isArray(value)
+        ? value.map((skill) => ({ ...skill, sourceUrl }))
+        : { ...value, sourceUrl });
+    } else {
+      imported = markdownSkill(path.split("/").pop(), text, sourceUrl);
+    }
+    await saveSkills(imported);
+    $("#skillUrl").value = "";
+  } catch (error) {
+    skillStatus(error.message || "Couldn't install that GitHub skill.", "err");
   }
 });
 

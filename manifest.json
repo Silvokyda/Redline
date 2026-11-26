@@ -20,7 +20,7 @@
   },
   "background": { "service_worker": "background.js" },
   "permissions": ["activeTab", "scripting", "storage"],
-  "host_permissions": ["https://api.anthropic.com/*", "https://api.openai.com/*"],
+  "host_permissions": ["https://api.anthropic.com/*", "https://api.openai.com/*", "https://raw.githubusercontent.com/*"],
   "options_page": "redline-options.html",
   "commands": {
     "_execute_action": {

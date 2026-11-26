@@ -1656,7 +1656,7 @@
   <div class="txt"><span class="status">Scanning page…</span></div>
   <span class="credit" title="Swarm Rebuild engine by Dhvanil Patel; Swarm motion design by Joel Califa">Swarm motion: Joel Califa · Engine: Dhvanil Patel</span>
   <div class="bar"><i></i></div>
-  <button data-a="tour" title="Auto-scroll while the swarm builds">Tour</button>
+  <button data-a="tour" class="on" aria-pressed="true" title="Auto-scroll while the swarm builds">Auto-scroll on</button>
   <button data-a="speed" title="Build speed">1×</button>
   <button data-a="sound" class="snd" title="Sound (M)"></button>
   <button data-a="hide" title="Hide controls for recording (H)">Hide</button>
@@ -3482,7 +3482,7 @@
     constructor() {
       this.dead = false;
       this.t0 = performance.now();
-      this.tour = false;
+      this.tour = true;
       this.tourV = 0;
       this.tourAcc = 0;
       this.speeds = [1, 2, 3];
@@ -3676,7 +3676,8 @@
         else if (a === "tour") {
           this.tour = !this.tour;
           b.classList.toggle("on", this.tour);
-          b.textContent = this.tour ? "Touring" : "Tour";
+          b.textContent = `Auto-scroll ${this.tour ? "on" : "off"}`;
+          b.setAttribute("aria-pressed", String(this.tour));
           if (this.tour) this.engine.start();
         } else if (a === "sound") {
           if (this.sfx.on && this.sfx.blocked) this.sfx.resume();
@@ -3761,11 +3762,8 @@
       if (this.complete) return;
       if (!E.started) v.status.innerHTML = `<b>${E.cursors.length}</b> agents ready<span class="sep"></span>${total.toLocaleString()} layers`;
       else {
-        const pend = E.tasks.length - done;
-        const below = E.tasks.some((t) => t.state === "wait" && t.layer === "world" && t.gate > E.frontier);
         v.status.innerHTML =
-          `<b>${workers}</b> agents<span class="sep"></span><b>${done.toLocaleString()}</b> / ${total.toLocaleString()} layers` +
-          (below && pend && !this.tour && E.backlog() === 0 ? `<span class="sep"></span>scroll to keep building` : "");
+          `<b>${workers}</b> agents<span class="sep"></span><b>${done.toLocaleString()}</b> / ${total.toLocaleString()} layers`;
       }
       v.barFill.style.width = total ? `${(done / total) * 100}%` : "0%";
       const busy = E.cursors.filter((c) => c.task).slice(-5);
@@ -3793,6 +3791,10 @@
       v.root.querySelector('[data-a="tour"]').hidden = true;
       v.root.querySelector('[data-a="speed"]').hidden = true;
       this.tour = false;
+      const autoScroll = v.root.querySelector('[data-a="tour"]');
+      autoScroll.classList.remove("on");
+      autoScroll.setAttribute("aria-pressed", "false");
+      autoScroll.textContent = "Auto-scroll off";
     }
 
     destroy(reveal) {
