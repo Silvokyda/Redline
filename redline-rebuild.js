@@ -165,8 +165,11 @@
     document.documentElement.appendChild(host);
     frame = reveal;
     crew.forEach((cursor, index) => {
-      const x = innerWidth * (0.06 + ((index * 0.6180339) % 0.86));
-      const y = innerHeight * (0.08 + ((index * 0.381966) % 0.76));
+      // Stage each agent in the same cell it will inspect, rather than scatter randomly.
+      const column = index % 6;
+      const row = Math.floor(index / 6);
+      const x = innerWidth * (column + 0.5) / 6;
+      const y = innerHeight * (row + 0.5) / 3;
       setCursor(cursor, x, y);
     });
   }
@@ -206,42 +209,15 @@
       .filter((target) => target.cx >= 0 && target.cx <= innerWidth && target.cy >= 0 && target.cy <= innerHeight)
       .sort((a, b) => (a.w * a.h) - (b.w * b.h));
     const selected = [];
-    const occupied = new Set();
-    const occupiedCells = new Set();
     // Seed a 6-by-3 grid first so the agents fan out across the viewport.
     for (let row = 0; row < 3; row++) {
       for (let column = 0; column < 6; column++) {
         const x = innerWidth * (column + 0.5) / 6;
         const y = innerHeight * (row + 0.5) / 3;
-        const target = candidates.find((item) => !occupied.has(item) &&
+        const target = candidates.find((item) =>
           Math.floor(item.cx / innerWidth * 6) === column && Math.floor(item.cy / innerHeight * 3) === row);
-        if (target) {
-          selected.push(target);
-          occupied.add(target);
-          occupiedCells.add(`${column}:${row}`);
-        }
-      }
-    }
-    while (selected.length < crew.length) {
-      let best = null;
-      let bestDistance = -1;
-      for (const target of candidates) {
-        if (occupied.has(target)) continue;
-        const distance = selected.length
-          ? Math.min(...selected.map((point) => Math.hypot((target.cx - point.cx) / innerWidth, (target.cy - point.cy) / innerHeight)))
-          : 0;
-        if (distance > bestDistance) { best = target; bestDistance = distance; }
-      }
-      if (!best) break;
-      selected.push(best);
-      occupied.add(best);
-    }
-    for (let row = 0; row < 3 && selected.length < crew.length; row++) {
-      for (let column = 0; column < 6 && selected.length < crew.length; column++) {
-        const x = innerWidth * (column + 0.5) / 6;
-        const y = innerHeight * (row + 0.5) / 3;
-        if (occupiedCells.has(`${column}:${row}`)) continue;
-        selected.push({ x: scrollX + x - 38, y: startY + y - 18, w: 76, h: 36, cx: x, cy: y, synthetic: true });
+        if (target) selected.push(target);
+        else selected.push({ x: scrollX + x - 38, y: startY + y - 18, w: 76, h: 36, cx: x, cy: y, synthetic: true });
       }
     }
     return selected.slice(0, crew.length);
@@ -262,12 +238,13 @@
   }
 
   async function scanAgent(cursor, target, index, startY, token) {
-    await pause((index % 6) * 55);
+    await pause(index * 48);
     if (cancelled || token !== scanToken) return;
     const x = target.cx ?? (target.x - scrollX + target.w / 2);
     const y = target.cy ?? (target.y - startY + target.h / 2);
-    const approachX = Math.max(12, Math.min(innerWidth - 18, x + (index % 2 ? -Math.min(26, target.w * 0.2) : Math.min(26, target.w * 0.2))));
-    const approachY = Math.max(12, Math.min(innerHeight - 74, y + (index % 3 - 1) * Math.min(18, target.h * 0.16)));
+    const column = index % 6;
+    const approachX = Math.max(12, Math.min(innerWidth - 18, x + (column < 3 ? 24 : -24)));
+    const approachY = Math.max(12, Math.min(innerHeight - 74, y));
     setCursor(cursor, approachX, approachY);
     focusTarget(cursor, target, startY);
     await pause(300 + (index % 4) * 55);

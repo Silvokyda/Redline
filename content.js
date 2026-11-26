@@ -581,7 +581,7 @@
 
   // ---------------------------------------------------------------- overlay
   const host = document.createElement("redline-overlay");
-  host.style.cssText = "all:initial;position:absolute;top:0;left:0;width:0;height:0;z-index:2147483647;";
+  host.style.cssText = "all:initial;position:fixed;inset:0;width:100vw;height:100vh;overflow:clip;pointer-events:none;z-index:2147483647;";
   const root = host.attachShadow({ mode: "closed" });
 
   const CSS = `
@@ -627,11 +627,14 @@
     .pin:hover .tip, .pin:focus .tip { display: block; }
     .pin .tip b { color: #fff; }
 
-    .panel { position: fixed; right: 18px; bottom: 18px; width: 320px; max-width: calc(100vw - 36px); pointer-events: auto;
+    .panel { position: fixed; right: 18px; bottom: 18px; width: 320px; max-width: calc(100vw - 36px);
+      max-height: calc(100vh - 36px); overflow-y: auto; overscroll-behavior: contain; pointer-events: auto;
       background: #fff; color: #20242b; border: 1px solid #d5d9e0; border-radius: 12px;
       box-shadow: 0 14px 40px rgba(20,24,32,.22); padding: 14px 14px 12px;
       font: 13px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
-    .panel h2 { margin: 0; font-size: 15px; font-weight: 700; display: flex; align-items: center; justify-content: space-between; }
+    .panel h2 { margin: -2px -2px 0; padding: 2px; font-size: 15px; font-weight: 700; display: flex; align-items: center; justify-content: space-between;
+      cursor: grab; user-select: none; touch-action: none; }
+    .panel h2.dragging { cursor: grabbing; }
     .panel h2 span { text-decoration: underline wavy #e5254b; text-underline-offset: 4px; text-decoration-thickness: 1.5px; }
     .panel .x { background: none; border: 0; font-size: 18px; line-height: 1; color: #5c6470; cursor: pointer; padding: 2px 4px; border-radius: 4px; }
     .panel p { margin: 8px 0 0; color: #3b414b; }
@@ -709,6 +712,10 @@
   const layer = document.createElement("div");
   layer.className = "layer";
   root.appendChild(layer);
+  function syncOverlayScroll() {
+    layer.style.transform = `translate(${-scrollX}px, ${-scrollY}px)`;
+  }
+  syncOverlayScroll();
   const panel = document.createElement("div");
   panel.className = "panel";
   panel.setAttribute("role", "dialog");
@@ -1043,7 +1050,7 @@
         ${extra.flash ? `<p class="muted">${esc(extra.flash)}</p>` : ""}`;
     }
     if (state.error) body += `<p class="err">${esc(state.error)}</p>`;
-    panel.innerHTML = `<h2><span>Redline</span><button class="x" data-act="exit" aria-label="Exit Redline and restore the page">×</button></h2>${body}`;
+    panel.innerHTML = `<h2 class="panel-drag-handle" title="Drag to move Redline"><span>Redline</span><button class="x" data-act="exit" aria-label="Exit Redline and restore the page">×</button></h2>${body}`;
   }
 
   function designSkillControl() {
@@ -1178,6 +1185,40 @@
   }
   function speedSeg() {
     return `<div class="seg" role="group" aria-label="Speed">${[1, 2, 3].map((s) => `<button data-speed="${s}" aria-pressed="${state.speed === s}">${s}×</button>`).join("")}</div>`;
+  }
+
+  let panelDrag = null;
+  panel.addEventListener("pointerdown", (e) => {
+    const handle = e.target.closest(".panel-drag-handle");
+    if (!handle || e.target.closest("button") || e.button !== 0) return;
+    const rect = panel.getBoundingClientRect();
+    panelDrag = { pointerId: e.pointerId, offsetX: e.clientX - rect.left, offsetY: e.clientY - rect.top };
+    handle.classList.add("dragging");
+    panel.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  });
+  panel.addEventListener("pointermove", (e) => {
+    if (!panelDrag || panelDrag.pointerId !== e.pointerId) return;
+    const rect = panel.getBoundingClientRect();
+    const left = Math.max(8, Math.min(innerWidth - rect.width - 8, e.clientX - panelDrag.offsetX));
+    const top = Math.max(8, Math.min(innerHeight - rect.height - 8, e.clientY - panelDrag.offsetY));
+    panel.style.left = `${left}px`;
+    panel.style.top = `${top}px`;
+    panel.style.right = "auto";
+    panel.style.bottom = "auto";
+  });
+  const finishPanelDrag = (e) => {
+    if (!panelDrag || panelDrag.pointerId !== e.pointerId) return;
+    panel.querySelector(".panel-drag-handle")?.classList.remove("dragging");
+    panelDrag = null;
+  };
+  panel.addEventListener("pointerup", finishPanelDrag);
+  panel.addEventListener("pointercancel", finishPanelDrag);
+  function clampDraggedPanel() {
+    if (!panel.style.left || !panel.style.top) return;
+    const rect = panel.getBoundingClientRect();
+    panel.style.left = `${Math.max(8, Math.min(innerWidth - rect.width - 8, rect.left))}px`;
+    panel.style.top = `${Math.max(8, Math.min(innerHeight - rect.height - 8, rect.top))}px`;
   }
 
   panel.addEventListener("click", async (e) => {
@@ -1368,6 +1409,7 @@
     if (!keepChanges) restoreAll();
     host.remove();
     removeEventListener("keydown", onKey, true);
+    removeEventListener("scroll", syncOverlayScroll);
     if (!keepChanges) removeEventListener("resize", onResize);
     delete window.__redline;
   }
@@ -1381,9 +1423,10 @@
   let resizeT = 0;
   const onResize = () => {
     clearTimeout(resizeT);
-    resizeT = setTimeout(() => { syncMobileStyles(); if (host.isConnected) layoutPins(); }, 150);
+    resizeT = setTimeout(() => { syncOverlayScroll(); clampDraggedPanel(); syncMobileStyles(); if (host.isConnected) layoutPins(); }, 150);
   };
   addEventListener("keydown", onKey, true);
+  addEventListener("scroll", syncOverlayScroll, { passive: true });
   addEventListener("resize", onResize);
 
   window.__redline = { toggle: exit };
