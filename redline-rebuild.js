@@ -165,12 +165,13 @@
     document.documentElement.appendChild(host);
     frame = reveal;
     crew.forEach((cursor, index) => {
-      // Stage each agent in the same cell it will inspect, rather than scatter randomly.
-      const column = index % 6;
-      const row = Math.floor(index / 6);
-      const x = innerWidth * (column + 0.5) / 6;
-      const y = innerHeight * (row + 0.5) / 3;
-      setCursor(cursor, x, y);
+      // Agents enter along both edges in ordered lanes, then travel to their assigned areas.
+      const side = index % 2 === 0 ? -1 : 1;
+      const x = side < 0 ? -26 : innerWidth + 8;
+      const safeHeight = Math.max(40, innerHeight - 132);
+      const y = 36 + safeHeight * (index + 1) / (crew.length + 1);
+      cursor.style.transition = "none";
+      setCursor(cursor, x, y, true);
     });
   }
 
@@ -196,10 +197,50 @@
     }
   }
 
-  function setCursor(cursor, x, y) {
+  function setCursor(cursor, x, y, allowOffscreen = false) {
     const maxX = Math.max(14, innerWidth - 28);
     const maxY = Math.max(14, innerHeight - 74);
-    cursor.style.transform = `translate(${Math.max(4, Math.min(maxX, x))}px, ${Math.max(4, Math.min(maxY, y))}px) rotate(-28deg)`;
+    const minX = allowOffscreen ? -32 : 4;
+    const limitX = allowOffscreen ? innerWidth + 16 : maxX;
+    const nextX = Math.max(minX, Math.min(limitX, x));
+    const nextY = Math.max(4, Math.min(maxY, y));
+    cursor.position = { x: nextX, y: nextY };
+    cursor.style.transform = `translate(${nextX}px, ${nextY}px) rotate(-28deg)`;
+  }
+
+  function travelCursor(cursor, x, y, index, token, duration) {
+    const from = cursor.position || { x, y };
+    const dx = x - from.x;
+    const dy = y - from.y;
+    const distance = Math.hypot(dx, dy);
+    if (reducedMotion || distance < 2) {
+      if (reducedMotion) cursor.style.transition = "none";
+      setCursor(cursor, x, y);
+      return Promise.resolve(!cancelled && token === scanToken);
+    }
+    const bend = Math.min(140, Math.max(28, distance * 0.16)) * (index % 2 ? 1 : -1);
+    const length = distance || 1;
+    const controlX = (from.x + x) / 2 - (dy / length) * bend;
+    const controlY = (from.y + y) / 2 + (dx / length) * bend;
+    const started = performance.now();
+    cursor.style.transition = "none";
+    return new Promise((resolve) => {
+      const step = (now) => {
+        if (cancelled || token !== scanToken) { resolve(false); return; }
+        const t = Math.min(1, (now - started) / duration);
+        const eased = t * t * (3 - 2 * t);
+        const inverse = 1 - eased;
+        setCursor(cursor,
+          inverse * inverse * from.x + 2 * inverse * eased * controlX + eased * eased * x,
+          inverse * inverse * from.y + 2 * inverse * eased * controlY + eased * eased * y);
+        if (t < 1) requestAnimationFrame(step);
+        else {
+          cursor.style.transition = "transform 520ms cubic-bezier(.22,.72,.2,1)";
+          resolve(true);
+        }
+      };
+      requestAnimationFrame(step);
+    });
   }
 
   function spreadTargets(targetsInView, startY) {
@@ -238,25 +279,27 @@
   }
 
   async function scanAgent(cursor, target, index, startY, token) {
-    await pause(index * 48);
+    await pause(index * 38);
     if (cancelled || token !== scanToken) return;
     const x = target.cx ?? (target.x - scrollX + target.w / 2);
     const y = target.cy ?? (target.y - startY + target.h / 2);
     const column = index % 6;
-    const approachX = Math.max(12, Math.min(innerWidth - 18, x + (column < 3 ? 24 : -24)));
+    const approachX = Math.max(12, Math.min(innerWidth - 18, x + (column < 3 ? 28 : -28)));
     const approachY = Math.max(12, Math.min(innerHeight - 74, y));
-    setCursor(cursor, approachX, approachY);
+    const distance = Math.hypot(approachX - cursor.position.x, approachY - cursor.position.y);
+    const arrived = await travelCursor(cursor, approachX, approachY, index, token, Math.min(1050, Math.max(420, distance * 0.58)));
+    if (!arrived || cancelled || token !== scanToken) return;
     focusTarget(cursor, target, startY);
-    await pause(300 + (index % 4) * 55);
+    await pause(130);
     if (cancelled || token !== scanToken) return;
-    setCursor(cursor, x, y);
-    await pause(280);
+    await travelCursor(cursor, x, y, index + 1, token, 180);
+    await pause(210);
     cursor.focusBox.dataset.active = "false";
   }
 
   async function animateViewport(points, startY, index, count, token) {
     const work = crew.map((cursor, cursorIndex) => scanAgent(cursor, points[cursorIndex], cursorIndex, startY, token));
-    const parts = reducedMotion ? 1 : 28;
+    const parts = reducedMotion ? 1 : 38;
     for (let part = 1; part <= parts; part++) {
       if (cancelled || token !== scanToken) return;
       const amount = part / parts;
